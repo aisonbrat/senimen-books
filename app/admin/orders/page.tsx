@@ -190,12 +190,12 @@ export default function OrdersPage() {
   const [sortKey, setSortKey] = useState<'created_desc' | 'created_asc' | 'title_asc'>('created_desc')
   const [updatingId, setUpdatingId] = useState<string | null>(null)
   const [aiUpdatingId, setAiUpdatingId] = useState<string | null>(null)
-  const supabase = useMemo(() => createClient(), [])
 
   const fetchOrders = useCallback(async () => {
     setLoading(true)
     setLoadError(null)
     try {
+      const supabase = createClient()
       const [ordRes, catRes] = await Promise.all([
         supabase.from('orders').select(ORDERS_ADMIN_LIST_SELECT).order('created_at', { ascending: false }),
         supabase.from('categories').select('id, title_kk'),
@@ -243,7 +243,7 @@ export default function OrdersPage() {
     } finally {
       setLoading(false)
     }
-  }, [supabase])
+  }, [])
 
   const monthOptions = useMemo(() => {
     const KK_MONTHS = [
