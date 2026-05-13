@@ -20,6 +20,10 @@
 # production
 /build
 
+# font merge scratch dirs (scripts/embed-cormorant-*.mjs)
+/.tmp-font-merge/
+/.tmp-font-merge-italic/
+
 # misc
 .DS_Store
 *.pem
