@@ -110,12 +110,14 @@ async function imageDataFromBlob(blob: Blob): Promise<{ dataUrl: string; w: numb
   })
 }
 
-/** Browser canvas hard limit — only if a single crop exceeds this do we scale down uniformly. */
+/** Last-resort canvas backing-store limit (many engines cap ~16k); avoids tab OOM. No other downscale. */
 const CANVAS_MAX_SIDE_PDF_PHOTO = 16384
 
 /**
- * Center-crop to the book page aspect, then rasterise at **native crop pixel size** (1:1 with source),
- * so PDF embedding is not limited by an artificial DPI cap. Uses PNG to avoid another JPEG generation cycle.
+ * Center-crop to the book page aspect, then copy pixels at **native crop resolution** (1:1 with decoded bitmap).
+ * - No `devicePixelRatio`: `canvas.width` / `canvas.height` are backing-store pixels, not CSS logical pixels.
+ * - Smoothing off: no interpolation blur on copy or on rare uniform downscale for the hard cap only.
+ * - `toDataURL('image/png')` — lossless; no quality parameter exists for PNG on canvas.
  */
 async function cropToCanvas(
   dataUrl: string,
@@ -138,10 +140,14 @@ async function cropToCanvas(
     sy = (imgH - sh) / 2
   }
 
-  let cw = Math.max(1, Math.ceil(sw))
-  let ch = Math.max(1, Math.ceil(sh))
-  const idealW = cw
-  const idealH = ch
+  // Integer source rect = pixel grid alignment (avoids sub-pixel blur from the compositor).
+  sx = Math.max(0, Math.floor(sx))
+  sy = Math.max(0, Math.floor(sy))
+  sw = Math.min(imgW - sx, Math.max(1, Math.ceil(sw)))
+  sh = Math.min(imgH - sy, Math.max(1, Math.ceil(sh)))
+
+  let cw = sw
+  let ch = sh
   if (Math.max(cw, ch) > CANVAS_MAX_SIDE_PDF_PHOTO) {
     const f = CANVAS_MAX_SIDE_PDF_PHOTO / Math.max(cw, ch)
     cw = Math.max(1, Math.floor(cw * f))
@@ -157,13 +163,13 @@ async function cropToCanvas(
   })
 
   const canvas = document.createElement('canvas')
+  // Backing-store size in bitmap pixels only — never multiply/divide by `window.devicePixelRatio`.
   canvas.width = cw
   canvas.height = ch
   const ctx = canvas.getContext('2d')!
   if (!ctx) return dataUrl
 
-  const needsInterpolation = cw !== idealW || ch !== idealH
-  ctx.imageSmoothingEnabled = needsInterpolation
+  ctx.imageSmoothingEnabled = false
   ctx.imageSmoothingQuality = 'high'
 
   ctx.drawImage(img, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height)
