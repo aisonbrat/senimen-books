@@ -1,7 +1,7 @@
 import { useEffect, useCallback, useRef, useMemo } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { useEditorStore } from '@/lib/store/editorStore'
-import { compressForStorage } from '@/lib/utils/imageCompression'
+import { prepareBookPhotoForUpload } from '@/lib/utils/imageCompression'
 import {
   getQuestionSlotBounds,
   nextCustomPageSortOrder,
@@ -89,58 +89,63 @@ export function useEditorData(orderId: string) {
       })
 
       const fpIds = sorted.map((c) => c.fixed_phrase_id).filter(Boolean) as string[]
-      let phraseById: Record<string, string> = {}
-      if (fpIds.length > 0) {
-        const { data: phRows } = await supabase
-          .from('category_phrases')
-          .select('id, phrase_kk')
-          .in('id', fpIds)
-          .abortSignal(signal)
-        if (signal.aborted || gen !== fetchGenerationRef.current) return
-        phraseById = Object.fromEntries((phRows || []).map((r: { id: string; phrase_kk: string }) => [r.id, r.phrase_kk]))
-      }
+
+      const phrasePromise =
+        fpIds.length > 0
+          ? supabase
+              .from('category_phrases')
+              .select('id, phrase_kk')
+              .in('id', fpIds)
+              .abortSignal(signal)
+          : Promise.resolve({ data: [] as { id: string; phrase_kk: string }[], error: null })
+
+      const [phRes, cfpRes, answersRes, cpRes] = await Promise.all([
+        phrasePromise,
+        supabase
+          .from('order_chapter_fixed_photos')
+          .select('chapter_id, photo_path')
+          .eq('order_id', orderId)
+          .abortSignal(signal),
+        supabase
+          .from('answers')
+          .select(ANSWERS_TEXT_ONLY_SELECT)
+          .eq('order_id', orderId)
+          .abortSignal(signal),
+        supabase
+          .from('custom_pages')
+          .select(CUSTOM_PAGES_EDITOR_SELECT)
+          .eq('order_id', orderId)
+          .order('sort_order')
+          .abortSignal(signal),
+      ])
+
+      if (signal.aborted || gen !== fetchGenerationRef.current) return
+
+      const batchErr = phRes.error || cfpRes.error || answersRes.error || cpRes.error
+      if (batchErr) throw batchErr
+
+      const phraseById = Object.fromEntries(
+        (phRes.data || []).map((r: { id: string; phrase_kk: string }) => [r.id, r.phrase_kk]),
+      )
 
       const chaptersHydrated = sorted.map((c) => ({
         ...c,
         fixed_phrase_kk: c.fixed_phrase_id ? phraseById[String(c.fixed_phrase_id)] ?? null : null,
       }))
 
-      const { data: cfpRows } = await supabase
-        .from('order_chapter_fixed_photos')
-        .select('chapter_id, photo_path')
-        .eq('order_id', orderId)
-        .abortSignal(signal)
-
-      if (signal.aborted || gen !== fetchGenerationRef.current) return
-
       const chapterFixedPhotos: Record<string, string> = {}
-      for (const row of cfpRows || []) {
+      for (const row of cfpRes.data || []) {
         const r = row as { chapter_id: string; photo_path: string | null }
         if (r.photo_path?.trim()) chapterFixedPhotos[r.chapter_id] = r.photo_path.trim()
       }
 
-      const { data: answersData } = await supabase
-        .from('answers')
-        .select(ANSWERS_TEXT_ONLY_SELECT)
-        .eq('order_id', orderId)
-        .abortSignal(signal)
-
-      if (signal.aborted || gen !== fetchGenerationRef.current) return
-
       const answersMap: Record<string, string> = {}
-      const answersTyped = (answersData ?? []) as Array<{ question_id: string; text_content: string | null }>
+      const answersTyped = (answersRes.data ?? []) as Array<{ question_id: string; text_content: string | null }>
       for (const a of answersTyped) {
         if (a.text_content) answersMap[a.question_id] = a.text_content
       }
 
-      const { data: cpData } = await supabase
-        .from('custom_pages')
-        .select(CUSTOM_PAGES_EDITOR_SELECT)
-        .eq('order_id', orderId)
-        .order('sort_order')
-        .abortSignal(signal)
-
-      if (signal.aborted || gen !== fetchGenerationRef.current) return
+      const cpData = cpRes.data
 
       const typo = normalizeBookTypographyFromOrder(orderData as unknown)
 
@@ -488,11 +493,10 @@ export function useEditorData(orderId: string) {
   const uploadPhoto = useCallback(
     async (pageId: string, file: File, slotIndex: number, currentPhotos: string[]) => {
       try {
-        const compressed = await compressForStorage(file)
+        const compressed = await prepareBookPhotoForUpload(file)
         const filePath = `${orderId}/custom-${pageId}-${slotIndex}-${Date.now()}.${file.name.split('.').pop()}`
         const { error } = await supabase.storage.from(STORAGE_BUCKET_BOOK_PHOTOS).upload(filePath, compressed, { upsert: true })
         if (error) {
-          // eslint-disable-next-line no-console
           console.error('[useEditorData] uploadPhoto storage:', error.message)
           void showStorageUploadAlert(supabase, orderId, 'Фото жүктелмеді (custom бет)', error)
           return
@@ -518,13 +522,12 @@ export function useEditorData(orderId: string) {
   const uploadFaktilerPhoto = useCallback(
     async (slotIndex: number, file: File) => {
       try {
-        const compressed = await compressForStorage(file)
+        const compressed = await prepareBookPhotoForUpload(file)
         const filePath = `${orderId}/faktiler-${slotIndex}-${Date.now()}.${file.name.split('.').pop()}`
         const { error } = await supabase.storage
           .from(STORAGE_BUCKET_BOOK_PHOTOS)
           .upload(filePath, compressed, { upsert: true })
         if (error) {
-          // eslint-disable-next-line no-console
           console.error('[useEditorData] uploadFaktilerPhoto storage:', error.message)
           void showStorageUploadAlert(supabase, orderId, 'Фото жүктелмеді (фактілер)', error)
           return
@@ -541,13 +544,12 @@ export function useEditorData(orderId: string) {
   const uploadFixedChapterPhoto = useCallback(
     async (chapterId: string, file: File) => {
       try {
-        const compressed = await compressForStorage(file)
+        const compressed = await prepareBookPhotoForUpload(file)
         const filePath = `${orderId}/fixed-chapter-${chapterId}-${Date.now()}.${file.name.split('.').pop()}`
         const { error } = await supabase.storage
           .from(STORAGE_BUCKET_BOOK_PHOTOS)
           .upload(filePath, compressed, { upsert: true })
         if (error) {
-          // eslint-disable-next-line no-console
           console.error('[useEditorData] uploadFixedChapterPhoto storage:', error.message)
           void showStorageUploadAlert(supabase, orderId, 'Фото жүктелмеді (тұрақты тарау)', error)
           return
@@ -648,7 +650,7 @@ export function useEditorData(orderId: string) {
   const uploadAdminCoverPrint = useCallback(
     async (file: File) => {
       try {
-        const compressed = await compressForStorage(file)
+        const compressed = await prepareBookPhotoForUpload(file)
         const tailRaw = String(file.name.split('.').pop() || 'jpg').toLowerCase()
         const tail = /^[a-z0-9]+$/.test(tailRaw) ? tailRaw : 'jpg'
         const filePath = `${orderId}/admin-cover-print.${tail}`

@@ -1,10 +1,10 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import { clsx } from 'clsx'
 import { createClient } from '@/lib/supabase/client'
 import { downloadBookPhotoBlob, getDisplayableUrl } from '@/lib/storage/bookPhotos'
-import { exportBookToPDF } from '@/lib/utils/pdfExport'
+import { exportBookToPDF, type ExportOrderInput } from '@/lib/utils/pdfExport'
 import { formatPhoneForDisplay } from '@/lib/utils/phone'
 import { adminSetOrderClientAiEnabled, adminUpdateOrderStatus } from './actions'
 import { Button } from '@/components/ui/Button'
@@ -20,6 +20,8 @@ import {
   CUSTOM_PAGES_EDITOR_SELECT,
   ORDERS_ADMIN_LIST_SELECT,
 } from '@/lib/supabase/querySelects'
+
+/* eslint-disable @typescript-eslint/no-explicit-any -- nested PostgREST / PDF helper shapes */
 
 async function fetchOrderData(orderId: string, categoryId: string) {
   const supabase = createClient()
@@ -98,6 +100,73 @@ async function fetchOrderData(orderId: string, categoryId: string) {
   return { allPages, answers, chapters, customPages, chapterFixedPhotos, pdf_colophon_template_kk }
 }
 
+/* eslint-enable @typescript-eslint/no-explicit-any */
+
+const ADMIN_ORDERS_PAGE_SIZE = 100
+
+function escapeIlike(s: string): string {
+  return s.replace(/\\/g, '\\\\').replace(/%/g, '\\%').replace(/_/g, '\\_')
+}
+
+/** Local calendar month (matches previous client-side month pill). */
+function localMonthBoundsIso(yyyyMm: string): { start: string; end: string } | null {
+  const m = /^(\d{4})-(\d{2})$/.exec(yyyyMm.trim())
+  if (!m) return null
+  const y = Number(m[1])
+  const mo = Number(m[2])
+  if (!Number.isFinite(y) || mo < 1 || mo > 12) return null
+  const start = new Date(y, mo - 1, 1, 0, 0, 0, 0)
+  const end = new Date(y, mo, 0, 23, 59, 59, 999)
+  return { start: start.toISOString(), end: end.toISOString() }
+}
+
+/**
+ * When the search box looks like a phone query, narrow orders by matching profile_phones.
+ * Returns null if this is not a phone-style search (use text ilike instead).
+ */
+async function resolveProfileIdsByPhoneDigits(
+  supabase: ReturnType<typeof createClient>,
+  rawSearch: string,
+): Promise<string[] | null> {
+  const trimmed = rawSearch.trim()
+  const digits = trimmed.replace(/\D/g, '')
+  if (digits.length < 4) return null
+  if (!/^[\d\s\-+()]+$/.test(trimmed)) return null
+  const { data, error } = await supabase.from('profile_phones').select('profile_id').ilike('phone', `%${digits}%`)
+  if (error) return null
+  return [...new Set((data || []).map((r: { profile_id: string }) => r.profile_id))].slice(0, 400)
+}
+
+/** Admin list + PDF export row (aligned with ORDERS_ADMIN_LIST_SELECT). */
+type AdminOrderListRow = {
+  id: string
+  client_id?: string | null
+  category_id?: string | null
+  author_name?: string | null
+  book_title?: string | null
+  recipient_name?: string | null
+  delivery_address?: string | null
+  status: string
+  assigned_editor?: string | null
+  editor_id?: string | null
+  created_at: string
+  updated_at?: string
+  submitted_at?: string | null
+  completed_at?: string | null
+  client_ai_enabled?: boolean
+  admin_cover_print_path?: string | null
+  faktiler_text?: string | null
+  faktiler_photo_path?: string | null
+  faktiler_facts?: unknown
+  answer_font_preset?: string | null
+  answer_text_align?: string | null
+  algy_font_preset?: string | null
+  hat_font_preset?: string | null
+  fixed_rectangle_color?: string | null
+  algy_soz?: string | null
+  hat_text?: string | null
+}
+
 const selectCls = clsx(
   'rounded-[var(--radius-md)] border border-[color:var(--border)] bg-[color:var(--surface)]',
   'px-2 py-1.5 text-[12px] text-[color:var(--text-primary)] shadow-[var(--shadow-xs)] outline-none',
@@ -105,19 +174,38 @@ const selectCls = clsx(
   'focus-visible:border-[color:var(--accent)] focus-visible:ring-2 focus-visible:ring-[color:var(--accent-ring)]'
 )
 
-function PDFButton({ order }: { order: any }) {
+function PDFButton({ order }: { order: AdminOrderListRow }) {
   const [exporting, setExporting] = useState(false)
   const [progress, setProgress] = useState({ current: 0, total: 0 })
   async function handleExport() {
     setExporting(true)
     try {
-      const supabase = createClient()
       const { answers, chapters, customPages, chapterFixedPhotos, pdf_colophon_template_kk } = await fetchOrderData(
         order.id,
-        order.category_id
+        String(order.category_id ?? ''),
       )
+      const pdfOrder: ExportOrderInput = {
+        book_title: order.book_title ?? '',
+        author_name: order.author_name ?? undefined,
+        recipient_name: order.recipient_name ?? undefined,
+        category_id: order.category_id,
+        completed_at: order.completed_at,
+        submitted_at: order.submitted_at,
+        updated_at: order.updated_at,
+        pdf_colophon_template_kk,
+        algy_soz: order.algy_soz ?? undefined,
+        hat_text: order.hat_text ?? undefined,
+        faktiler_text: order.faktiler_text,
+        faktiler_photo_path: order.faktiler_photo_path,
+        faktiler_facts: order.faktiler_facts,
+        answer_font_preset: order.answer_font_preset ?? undefined,
+        answer_text_align: order.answer_text_align ?? undefined,
+        algy_font_preset: order.algy_font_preset,
+        hat_font_preset: order.hat_font_preset,
+        fixed_rectangle_color: order.fixed_rectangle_color,
+      }
       await exportBookToPDF(
-        { ...order, pdf_colophon_template_kk },
+        pdfOrder,
         chapters,
         answers,
         customPages,
@@ -177,73 +265,206 @@ function AdminCoverDownloadButton({ order }: { order: { id: string; admin_cover_
 }
 
 export default function OrdersPage() {
-  const [orders, setOrders] = useState<any[]>([])
+  const [orders, setOrders] = useState<AdminOrderListRow[]>([])
   const [categories, setCategories] = useState<Record<string, string>>({})
   const [editors, setEditors] = useState<Record<string, string>>({})
   const [clientPhones, setClientPhones] = useState<Record<string, string>>({})
   const [loading, setLoading] = useState(true)
+  const [loadingMore, setLoadingMore] = useState(false)
+  const [refreshing, setRefreshing] = useState(false)
   const [loadError, setLoadError] = useState<string | null>(null)
   const [mutationError, setMutationError] = useState<string | null>(null)
-  const [search, setSearch] = useState('')
+  const [searchInput, setSearchInput] = useState('')
+  const [debouncedSearch, setDebouncedSearch] = useState('')
   const [filter, setFilter] = useState('all')
   const [monthFilter, setMonthFilter] = useState('')
   const [sortKey, setSortKey] = useState<'created_desc' | 'created_asc' | 'title_asc'>('created_desc')
   const [updatingId, setUpdatingId] = useState<string | null>(null)
   const [aiUpdatingId, setAiUpdatingId] = useState<string | null>(null)
+  const [totalMatching, setTotalMatching] = useState<number | null>(null)
+  const [statusCounts, setStatusCounts] = useState<Record<string, number>>({ all: 0 })
 
-  const fetchOrders = useCallback(async () => {
-    setLoading(true)
-    setLoadError(null)
-    try {
-      const supabase = createClient()
-      const [ordRes, catRes] = await Promise.all([
-        supabase.from('orders').select(ORDERS_ADMIN_LIST_SELECT).order('created_at', { ascending: false }),
-        supabase.from('categories').select('id, title_kk'),
-      ])
-      const errMsg = ordRes.error?.message || catRes.error?.message || null
-      if (errMsg) {
-        setLoadError(errMsg); setOrders([]); setCategories({}); setEditors({}); setClientPhones({})
-        return
-      }
-      const rows = ordRes.data || []
-      setOrders(rows)
-      const catMap: Record<string, string> = {}
-      catRes.data?.forEach((c: any) => { catMap[c.id] = c.title_kk })
-      setCategories(catMap)
+  const ordersRef = useRef(orders)
+  useEffect(() => {
+    ordersRef.current = orders
+  }, [orders])
 
+  useEffect(() => {
+    const t = setTimeout(() => setDebouncedSearch(searchInput.trim()), 350)
+    return () => clearTimeout(t)
+  }, [searchInput])
+
+  const fetchStatusCounts = useCallback(async () => {
+    const supabase = createClient()
+    const head = () => supabase.from('orders').select('id', { count: 'exact', head: true })
+    const allRes = await head()
+    if (allRes.error) return
+    const perStatus = await Promise.all(ORDER_STATUS_ORDER.map((s) => head().eq('status', s)))
+    if (perStatus.some((r) => r.error)) return
+    const byStatus = Object.fromEntries(
+      ORDER_STATUS_ORDER.map((s, i) => [s, perStatus[i].count ?? 0]),
+    ) as Record<string, number>
+    setStatusCounts({ ...byStatus, all: allRes.count ?? 0 })
+  }, [])
+
+  const mergeProfilesForRows = useCallback(
+    async (supabase: ReturnType<typeof createClient>, rows: AdminOrderListRow[], append: boolean) => {
       const idSet = new Set<string>()
-      for (const o of rows as any[]) {
+      for (const o of rows) {
         if (o.client_id) idSet.add(o.client_id)
         const ed = o.assigned_editor ?? o.editor_id
         if (ed) idSet.add(ed)
       }
       const ids = [...idSet]
+      if (ids.length === 0) {
+        if (!append) {
+          setEditors({})
+          setClientPhones({})
+        }
+        return
+      }
+      const { data: profs, error: pe } = await supabase.from('profiles').select('id, full_name').in('id', ids)
+      const { data: phoneRows, error: phe } = await supabase
+        .from('profile_phones')
+        .select('profile_id, phone')
+        .in('profile_id', ids)
+      if (pe || phe) {
+        if (pe) setLoadError(pe.message)
+        if (phe) setLoadError(phe.message)
+        return
+      }
       const profileMap: Record<string, string> = {}
       const phoneMap: Record<string, string> = {}
-      if (ids.length > 0) {
-        const { data: profs, error: pe } = await supabase.from('profiles').select('id, full_name').in('id', ids)
-        const { data: phoneRows, error: phe } = await supabase
-          .from('profile_phones')
-          .select('profile_id, phone')
-          .in('profile_id', ids)
-        if (pe) { setLoadError(pe.message) } else {
-          profs?.forEach((p: { id: string; full_name: string | null }) => { profileMap[p.id] = p.full_name || '' })
-        }
-        if (phe) { setLoadError(phe.message) } else {
-          phoneRows?.forEach((row: { profile_id: string; phone: string | null }) => {
-            if (row.phone) phoneMap[row.profile_id] = formatPhoneForDisplay(String(row.phone)) || String(row.phone)
-          })
-        }
+      profs?.forEach((p: { id: string; full_name: string | null }) => {
+        profileMap[p.id] = p.full_name || ''
+      })
+      phoneRows?.forEach((row: { profile_id: string; phone: string | null }) => {
+        if (row.phone) phoneMap[row.profile_id] = formatPhoneForDisplay(String(row.phone)) || String(row.phone)
+      })
+      if (append) {
+        setEditors((prev) => ({ ...prev, ...profileMap }))
+        setClientPhones((prev) => ({ ...prev, ...phoneMap }))
+      } else {
+        setEditors(profileMap)
+        setClientPhones(phoneMap)
       }
-      setEditors(profileMap)
-      setClientPhones(phoneMap)
-    } catch (e) {
-      setLoadError(e instanceof Error ? e.message : 'Жүктеу қатесі')
-      setOrders([]); setCategories({}); setEditors({}); setClientPhones({})
-    } finally {
-      setLoading(false)
+    },
+    [],
+  )
+
+  const fetchOrdersPage = useCallback(
+    async (append: boolean, options?: { preserveRowsWhileLoading?: boolean }) => {
+      const supabase = createClient()
+      const offset = append ? ordersRef.current.length : 0
+
+      if (append) {
+        setLoadingMore(true)
+      } else if (options?.preserveRowsWhileLoading) {
+        setRefreshing(true)
+      } else {
+        setOrders([])
+        setTotalMatching(null)
+        setLoading(true)
+      }
+
+      setLoadError(null)
+      try {
+        const phoneIds = await resolveProfileIdsByPhoneDigits(supabase, debouncedSearch)
+
+        let q = supabase.from('orders').select(ORDERS_ADMIN_LIST_SELECT, { count: 'exact' })
+        if (filter !== 'all') q = q.eq('status', filter)
+        const mb = monthFilter ? localMonthBoundsIso(monthFilter) : null
+        if (mb) q = q.gte('created_at', mb.start).lte('created_at', mb.end)
+
+        if (phoneIds !== null) {
+          if (phoneIds.length === 0) {
+            if (!append) {
+              setOrders([])
+              setTotalMatching(0)
+            }
+            return
+          }
+          q = q.in('client_id', phoneIds)
+        } else if (debouncedSearch) {
+          const esc = escapeIlike(debouncedSearch)
+          q = q.or(`book_title.ilike.%${esc}%,author_name.ilike.%${esc}%,recipient_name.ilike.%${esc}%`)
+        }
+
+        if (sortKey === 'title_asc') {
+          q = q.order('book_title', { ascending: true }).order('id', { ascending: true })
+        } else {
+          q = q
+            .order('created_at', { ascending: sortKey === 'created_asc' })
+            .order('id', { ascending: sortKey === 'created_asc' })
+        }
+
+        const [ordRes, catRes] = await Promise.all([
+          q.range(offset, offset + ADMIN_ORDERS_PAGE_SIZE - 1),
+          append
+            ? Promise.resolve({ data: null as unknown[] | null, error: null })
+            : supabase.from('categories').select('id, title_kk'),
+        ])
+
+        const errMsg = ordRes.error?.message || catRes.error?.message || null
+        if (errMsg) {
+          setLoadError(errMsg)
+          if (!append) {
+            setOrders([])
+            setCategories({})
+            setEditors({})
+            setClientPhones({})
+          }
+          return
+        }
+
+        const rows = (ordRes.data || []) as unknown as AdminOrderListRow[]
+        setTotalMatching(typeof ordRes.count === 'number' ? ordRes.count : offset + rows.length)
+
+        if (append) setOrders((prev) => [...prev, ...rows])
+        else setOrders(rows)
+
+        if (!append && catRes.data) {
+          const catRows = (catRes.data || []) as { id: string; title_kk: string }[]
+          const catMap: Record<string, string> = {}
+          catRows.forEach((c) => {
+            catMap[c.id] = c.title_kk
+          })
+          setCategories(catMap)
+        }
+
+        await mergeProfilesForRows(supabase, rows, append)
+      } catch (e) {
+        setLoadError(e instanceof Error ? e.message : 'Жүктеу қатесі')
+        if (!append) {
+          setOrders([])
+          setCategories({})
+          setEditors({})
+          setClientPhones({})
+        }
+      } finally {
+        setLoading(false)
+        setLoadingMore(false)
+        setRefreshing(false)
+      }
+    },
+    [debouncedSearch, filter, monthFilter, sortKey, mergeProfilesForRows],
+  )
+
+  const reloadListAndCounts = useCallback(async () => {
+    await Promise.all([fetchStatusCounts(), fetchOrdersPage(false, { preserveRowsWhileLoading: true })])
+  }, [fetchStatusCounts, fetchOrdersPage])
+
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      await fetchStatusCounts()
+      if (cancelled) return
+      await fetchOrdersPage(false)
+    })()
+    return () => {
+      cancelled = true
     }
-  }, [])
+  }, [fetchStatusCounts, fetchOrdersPage, filter, monthFilter, debouncedSearch, sortKey])
 
   const monthOptions = useMemo(() => {
     const KK_MONTHS = [
@@ -261,44 +482,12 @@ export default function OrdersPage() {
     return out
   }, [])
 
-  const displayedOrders = useMemo(() => {
-    let rows = filter === 'all' ? [...orders] : orders.filter((o) => o.status === filter)
-    if (monthFilter) {
-      rows = rows.filter((o) => {
-        const d = new Date(o.created_at)
-        const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}`
-        return key === monthFilter
-      })
-    }
-    if (search.trim()) {
-      const q = search.toLowerCase()
-      rows = rows.filter((o) => {
-        const title = String(o.book_title || '').toLowerCase()
-        const author = String(o.author_name || '').toLowerCase()
-        const recipient = String(o.recipient_name || '').toLowerCase()
-        const phone = o.client_id && clientPhones[o.client_id]
-          ? clientPhones[o.client_id].replace(/\s/g, '').toLowerCase()
-          : ''
-        return title.includes(q) || author.includes(q) || recipient.includes(q) || phone.includes(q.replace(/\s/g, ''))
-      })
-    }
-    rows.sort((a, b) => {
-      if (sortKey === 'title_asc') return String(a.book_title ?? '').localeCompare(String(b.book_title ?? ''), 'kk')
-      const ta = new Date(a.created_at).getTime()
-      const tb = new Date(b.created_at).getTime()
-      return sortKey === 'created_asc' ? ta - tb : tb - ta
-    })
-    return rows
-  }, [orders, filter, monthFilter, sortKey, search, clientPhones])
-
-  useEffect(() => { void fetchOrders() }, [fetchOrders])
-
   async function updateStatus(orderId: string, newStatus: string) {
     setMutationError(null); setUpdatingId(orderId)
     try {
       const res = await adminUpdateOrderStatus(orderId, newStatus)
       if ('error' in res && res.error) { setMutationError(res.error); return }
-      await fetchOrders()
+      await reloadListAndCounts()
     } finally { setUpdatingId(null) }
   }
 
@@ -307,7 +496,7 @@ export default function OrdersPage() {
     try {
       const res = await adminUpdateOrderStatus(orderId, 'checking')
       if ('error' in res && res.error) { setMutationError(res.error); return }
-      await fetchOrders()
+      await reloadListAndCounts()
     } finally { setUpdatingId(null) }
   }
 
@@ -316,7 +505,7 @@ export default function OrdersPage() {
     try {
       const res = await adminUpdateOrderStatus(orderId, 'filling')
       if ('error' in res && res.error) { setMutationError(res.error); return }
-      await fetchOrders()
+      await reloadListAndCounts()
     } finally { setUpdatingId(null) }
   }
 
@@ -325,23 +514,17 @@ export default function OrdersPage() {
     try {
       const res = await adminSetOrderClientAiEnabled(orderId, next)
       if ('error' in res && res.error) { setMutationError(res.error); return }
-      await fetchOrders()
+      await reloadListAndCounts()
     } finally { setAiUpdatingId(null) }
   }
 
-  // Status counts for filter pills
-  const statusCounts = useMemo(() => {
-    const counts: Record<string, number> = { all: orders.length }
-    ORDER_STATUS_ORDER.forEach((s) => { counts[s] = orders.filter((o) => o.status === s).length })
-    return counts
-  }, [orders])
+  const hasMore = totalMatching !== null && orders.length < totalMatching
 
-  const isFiltered = search.trim() || monthFilter || filter !== 'all'
+  const isFiltered = searchInput.trim() || monthFilter || filter !== 'all'
 
-  // Stats
-  const statsPending = orders.filter((o) => o.status === 'filling' || o.status === 'checking').length
-  const statsCompleted = orders.filter((o) => o.status === 'completed').length
-  const statsDelivered = orders.filter((o) => o.status === 'delivered').length
+  const statsPending = (statusCounts.filling ?? 0) + (statusCounts.checking ?? 0)
+  const statsCompleted = statusCounts.completed ?? 0
+  const statsDelivered = statusCounts.delivered ?? 0
 
   return (
     <div className="px-4 py-6 md:px-10 md:py-8">
@@ -350,18 +533,24 @@ export default function OrdersPage() {
           Тапсырыстар
         </h1>
         <p className="mt-1 text-[13px] font-medium text-[color:var(--text-muted)]">
-          {isFiltered
-            ? <>{displayedOrders.length} <span className="text-[color:var(--text-muted)]">/ {orders.length}</span> тапсырыс</>
-            : <>{orders.length} тапсырыс</>
-          }
+          {refreshing ? (
+            <span className="text-[color:var(--accent)]">Жаңартылуда…</span>
+          ) : totalMatching !== null ? (
+            <>
+              {orders.length} / {totalMatching} көрсетілуде
+              {isFiltered ? <span className="text-[color:var(--text-muted)]"> (сүзгі)</span> : null}
+            </>
+          ) : (
+            <>Жүктелуде…</>
+          )}
         </p>
       </header>
 
       {/* ── Stats row ───────────────────────────────────────────────────── */}
-      {!loading && !loadError && orders.length > 0 && (
+      {!loading && !loadError && statusCounts.all > 0 && (
         <div className="mb-6 grid grid-cols-2 gap-3 sm:grid-cols-4">
           {[
-            { label: 'Барлығы', value: orders.length },
+            { label: 'Барлығы', value: statusCounts.all },
             { label: 'Күтуде', value: statsPending },
             { label: 'Аяқталды', value: statsCompleted },
             { label: 'Жеткізілді', value: statsDelivered },
@@ -391,8 +580,8 @@ export default function OrdersPage() {
         {/* Search */}
         <input
           type="search"
-          value={search}
-          onChange={(e) => setSearch(e.target.value)}
+          value={searchInput}
+          onChange={(e) => setSearchInput(e.target.value)}
           placeholder="Кітап, автор, алушы немесе телефон бойынша іздеу…"
           className={clsx(
             'mb-4 w-full rounded-[var(--radius-md)] border border-[color:var(--border)] bg-[color:var(--surface-subtle)]',
@@ -461,7 +650,7 @@ export default function OrdersPage() {
           {isFiltered && (
             <button
               type="button"
-              onClick={() => { setSearch(''); setFilter('all'); setMonthFilter('') }}
+              onClick={() => { setSearchInput(''); setFilter('all'); setMonthFilter('') }}
               className="ml-auto text-[12px] font-semibold text-[color:var(--text-muted)] underline-offset-2 transition-colors hover:text-[color:var(--accent)] hover:underline"
             >
               Тазалау ✕
@@ -488,9 +677,9 @@ export default function OrdersPage() {
         <div className="rounded-[var(--radius-lg)] border border-red-200 bg-red-50/80 p-6">
           <p className="text-[14px] font-semibold text-red-900">Тапсырыстарды жүктеу мүмкін болмады</p>
           <p className="mt-2 text-[13px] leading-relaxed text-[color:var(--text-secondary)]">{loadError}</p>
-          <Button type="button" variant="primary" className="mt-4" onClick={() => void fetchOrders()}>Қайта көріңіз</Button>
+          <Button type="button" variant="primary" className="mt-4" onClick={() => void reloadListAndCounts()}>Қайта көріңіз</Button>
         </div>
-      ) : displayedOrders.length === 0 ? (
+      ) : orders.length === 0 ? (
         <div className="rounded-[var(--radius-lg)] bg-[color:var(--surface)] px-8 py-14 text-center shadow-[0_1px_3px_rgba(15,23,42,0.05),0_4px_16px_rgba(15,23,42,0.06)]">
           <p className="text-[13px] font-medium text-[color:var(--text-muted)]">
             {isFiltered ? 'Сүзгі бойынша тапсырыс табылмады' : 'Тапсырыстар жоқ'}
@@ -500,7 +689,7 @@ export default function OrdersPage() {
         <>
           {/* Mobile cards */}
           <div className="flex flex-col gap-3 md:hidden">
-            {displayedOrders.map((order) => {
+            {orders.map((order) => {
               const eid = order.assigned_editor ?? order.editor_id
               const editorName = eid ? editors[eid] : ''
               return (
@@ -585,12 +774,12 @@ export default function OrdersPage() {
                   </tr>
                 </thead>
                 <tbody>
-                  {displayedOrders.map((order, i) => (
+                  {orders.map((order, i) => (
                     <tr
                       key={order.id}
                       className={clsx(
                         'transition-colors duration-[var(--transition)] hover:bg-[color:var(--surface-subtle)]/60',
-                        i < displayedOrders.length - 1 && 'border-b border-[color:var(--border)]'
+                        i < orders.length - 1 && 'border-b border-[color:var(--border)]'
                       )}
                     >
                       <td className="px-4 py-3">
@@ -686,6 +875,24 @@ export default function OrdersPage() {
               </table>
             </div>
           </div>
+
+          {!loading && hasMore && (
+            <div className="mt-6 flex flex-col items-center gap-2">
+              <Button
+                type="button"
+                variant="secondary"
+                disabled={loadingMore}
+                onClick={() => void fetchOrdersPage(true)}
+              >
+                {loadingMore
+                  ? 'Жүктелуде…'
+                  : `Тағы жүктеу (${Math.min(ADMIN_ORDERS_PAGE_SIZE, (totalMatching ?? 0) - orders.length)})`}
+              </Button>
+              <p className="text-center text-[11px] font-medium text-[color:var(--text-muted)]">
+                Алғашқы бет {ADMIN_ORDERS_PAGE_SIZE} жазбаға шектеледі; қалғанын осы батырма арқылы қосыңыз.
+              </p>
+            </div>
+          )}
         </>
       )}
     </div>

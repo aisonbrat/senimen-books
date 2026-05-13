@@ -28,6 +28,32 @@ export function segmentLooksLikePhotoSegment(t: string): boolean {
 }
 
 /**
+ * PDF / print export: use full-size Storage objects, not Image Transformation CDN URLs.
+ * - Rewrites `/storage/v1/render/image/public/...` → `/storage/v1/object/public/...` and drops the query.
+ * - Removes common transform query params on `/object/public/` and `/object/sign/` URLs (keeps `token`).
+ */
+export function stripStorageImageTransformationParams(url: string): string {
+  const s = (url || '').trim()
+  if (!s || !/^https?:\/\//i.test(s)) return s
+  try {
+    const u = new URL(s)
+    const esc = STORAGE_BUCKET_BOOK_PHOTOS.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+    const renderRe = new RegExp(`/storage/v1/render/image/public/${esc}/`, 'i')
+    if (renderRe.test(u.pathname)) {
+      u.pathname = u.pathname.replace(renderRe, `/storage/v1/object/public/${STORAGE_BUCKET_BOOK_PHOTOS}/`)
+      u.search = ''
+      return u.toString()
+    }
+    if (!u.pathname.includes('/storage/v1/object/')) return s
+    const stripKeys = ['width', 'height', 'quality', 'resize', 'format']
+    for (const k of stripKeys) u.searchParams.delete(k)
+    return u.toString()
+  } catch {
+    return s
+  }
+}
+
+/**
  * Normalizes stored book photo references to an absolute URL the browser can load.
  * Does **not** strip `?…` (signed URLs must keep query).
  */

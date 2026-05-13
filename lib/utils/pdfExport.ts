@@ -38,6 +38,7 @@ import {
   answerDisplaysAsPhotoContent,
   resolveBookPhotoImageUrl,
   splitPhotoAnswerToResolvedUrls,
+  stripStorageImageTransformationParams,
 } from '@/lib/utils/bookPhotoUrl'
 import { candidateStorageObjectPaths, downloadBookPhotoBlob, fetchBookPhotoViaNextRoute, getDisplayableUrl } from '@/lib/storage/bookPhotos'
 import { parseCssHexColor } from '@/lib/utils/colorHex'
@@ -73,7 +74,7 @@ function registerFonts(pdf: jsPDF) {
 
 async function fetchImageAsBase64(url: string): Promise<{ dataUrl: string; w: number; h: number } | null> {
   try {
-    const res = await fetch(url)
+    const res = await fetch(stripStorageImageTransformationParams(url))
     if (!res.ok) return null
     const blob = await res.blob()
     return new Promise(resolve => {
@@ -109,24 +110,20 @@ async function imageDataFromBlob(blob: Blob): Promise<{ dataUrl: string; w: numb
   })
 }
 
-/** ~300 DPI rasterisation for print-sized regions (mm → px). */
-const MM_PER_INCH = 25.4
-const PRINT_DPI = 300
-const CANVAS_MAX_SIDE = 8192
+/** Browser canvas hard limit — only if a single crop exceeds this do we scale down uniformly. */
+const CANVAS_MAX_SIDE_PDF_PHOTO = 16384
 
-function cropToCanvas(dataUrl: string, imgW: number, imgH: number, targetWmm: number, targetHmm: number): string {
-  const canvas = document.createElement('canvas')
-  let cw = Math.round((targetWmm / MM_PER_INCH) * PRINT_DPI)
-  let ch = Math.round((targetHmm / MM_PER_INCH) * PRINT_DPI)
-  const scaleDown = Math.min(1, CANVAS_MAX_SIDE / Math.max(cw, ch, 1))
-  cw = Math.max(1, Math.round(cw * scaleDown))
-  ch = Math.max(1, Math.round(ch * scaleDown))
-  canvas.width = cw
-  canvas.height = ch
-  const ctx = canvas.getContext('2d')!
-  if (!ctx) return dataUrl
-  const img = new window.Image()
-  img.src = dataUrl
+/**
+ * Center-crop to the book page aspect, then rasterise at **native crop pixel size** (1:1 with source),
+ * so PDF embedding is not limited by an artificial DPI cap. Uses PNG to avoid another JPEG generation cycle.
+ */
+async function cropToCanvas(
+  dataUrl: string,
+  imgW: number,
+  imgH: number,
+  targetWmm: number,
+  targetHmm: number,
+): Promise<string> {
   const ratio = imgW / imgH
   const boxRatio = targetWmm / targetHmm
   let sx = 0,
@@ -140,10 +137,37 @@ function cropToCanvas(dataUrl: string, imgW: number, imgH: number, targetWmm: nu
     sh = imgW / boxRatio
     sy = (imgH - sh) / 2
   }
-  ctx.imageSmoothingEnabled = true
+
+  let cw = Math.max(1, Math.ceil(sw))
+  let ch = Math.max(1, Math.ceil(sh))
+  const idealW = cw
+  const idealH = ch
+  if (Math.max(cw, ch) > CANVAS_MAX_SIDE_PDF_PHOTO) {
+    const f = CANVAS_MAX_SIDE_PDF_PHOTO / Math.max(cw, ch)
+    cw = Math.max(1, Math.floor(cw * f))
+    ch = Math.max(1, Math.floor(ch * f))
+  }
+
+  const img = new window.Image()
+  img.crossOrigin = 'anonymous'
+  await new Promise<void>((resolve, reject) => {
+    img.onload = () => resolve()
+    img.onerror = () => reject(new Error('pdf photo decode'))
+    img.src = dataUrl
+  })
+
+  const canvas = document.createElement('canvas')
+  canvas.width = cw
+  canvas.height = ch
+  const ctx = canvas.getContext('2d')!
+  if (!ctx) return dataUrl
+
+  const needsInterpolation = cw !== idealW || ch !== idealH
+  ctx.imageSmoothingEnabled = needsInterpolation
   ctx.imageSmoothingQuality = 'high'
+
   ctx.drawImage(img, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height)
-  return canvas.toDataURL('image/jpeg', 0.98)
+  return canvas.toDataURL('image/png')
 }
 
 async function drawPhoto(
@@ -162,21 +186,26 @@ async function drawPhoto(
   }
   let result: { dataUrl: string; w: number; h: number } | null = null
   if (supabase) {
-    const displayUrl = await getDisplayableUrl(supabase, url, { httpOnly: true })
-    if (displayUrl) result = await fetchImageAsBase64(displayUrl)
-    if (!result) {
-      const blob = await downloadBookPhotoBlob(supabase, url)
-      if (blob) result = await imageDataFromBlob(blob)
-    }
+    // Prefer Storage `.download()` / same-origin proxy (original bytes). Avoid HTTP URL first — it may be
+    // a transformation CDN URL or a path that decodes to a smaller pipeline than the raw object.
+    const blob = await downloadBookPhotoBlob(supabase, url)
+    if (blob) result = await imageDataFromBlob(blob)
     if (!result && typeof window !== 'undefined') {
       for (const objectPath of candidateStorageObjectPaths(url)) {
         const proxied = await fetchBookPhotoViaNextRoute(objectPath)
-        if (proxied) { result = await imageDataFromBlob(proxied); break }
+        if (proxied) {
+          result = await imageDataFromBlob(proxied)
+          break
+        }
       }
+    }
+    if (!result) {
+      const displayUrl = await getDisplayableUrl(supabase, url, { httpOnly: true })
+      if (displayUrl) result = await fetchImageAsBase64(displayUrl)
     }
   }
   if (!result) {
-    const pub = resolveBookPhotoImageUrl(url)
+    const pub = stripStorageImageTransformationParams(resolveBookPhotoImageUrl(url))
     if (pub) result = await fetchImageAsBase64(pub)
   }
   if (!result) {
@@ -184,8 +213,13 @@ async function drawPhoto(
     pdf.rect(x, y, w, h, 'F')
     return
   }
-  const cropped = cropToCanvas(result.dataUrl, result.w, result.h, w, h)
-  pdf.addImage(cropped, 'JPEG', x, y, w, h, undefined, 'SLOW')
+  try {
+    const cropped = await cropToCanvas(result.dataUrl, result.w, result.h, w, h)
+    pdf.addImage(cropped, 'PNG', x, y, w, h, undefined, 'SLOW')
+  } catch {
+    pdf.setFillColor(238, 238, 238)
+    pdf.rect(x, y, w, h, 'F')
+  }
 }
 
 let logoRasterCache: Promise<{ dataUrl: string; w: number; h: number } | null> | null = null

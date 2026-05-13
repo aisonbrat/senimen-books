@@ -15,7 +15,7 @@ import {
   normalizeAnswerToHtml,
 } from '@/lib/utils/answerHtml'
 import { STORAGE_BUCKET_BOOK_PHOTOS } from '@/lib/config'
-import { compressForStorage } from '@/lib/utils/imageCompression'
+import { prepareBookPhotoForUpload } from '@/lib/utils/imageCompression'
 import { showStorageUploadAlert } from '@/lib/utils/storageUploadErrorAlert'
 import { SignedBookPhotoImg } from '@/components/editor/SignedBookPhotoImg'
 import {
@@ -112,7 +112,7 @@ function QuestionCardInner({
     const file = e.target.files?.[0]
     if (!file || trialLocked) return
     try {
-      const compressed = await compressForStorage(file)
+      const compressed = await prepareBookPhotoForUpload(file)
       const ext = compressed.name.split('.').pop()
       const filePath = `${orderId}/${question.id}-${Date.now()}.${ext}`
       const { error } = await supabase.storage
