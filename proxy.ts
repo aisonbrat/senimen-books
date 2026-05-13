@@ -41,6 +41,7 @@ export async function proxy(request: NextRequest) {
       path.startsWith('/auth') ||
       path.startsWith('/design-preview') ||
       path.startsWith('/privacy') ||
+      path.startsWith('/landing') ||
       path === '/' ||
       path === '/start' ||
       path.startsWith('/api/public/')
