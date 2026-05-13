@@ -3,7 +3,7 @@ import { NextRequest, NextResponse } from 'next/server'
 
 import { requestIsHttps, supabaseAuthCookieOptions } from '@/lib/supabase/supabaseCookies'
 
-export async function middleware(request: NextRequest) {
+export async function proxy(request: NextRequest) {
   const response = NextResponse.next({ request })
 
   const isHttps = requestIsHttps(request.headers, request.nextUrl)
@@ -15,7 +15,9 @@ export async function middleware(request: NextRequest) {
     {
       cookieOptions: cookieDefaults,
       cookies: {
-        getAll() { return request.cookies.getAll() },
+        getAll() {
+          return request.cookies.getAll()
+        },
         setAll(cookiesToSet) {
           cookiesToSet.forEach(({ name, value, options }) => {
             request.cookies.set(name, value)
@@ -29,13 +31,12 @@ export async function middleware(request: NextRequest) {
     }
   )
 
-  const { data: { user } } = await supabase.auth.getUser()
+  const {
+    data: { user },
+  } = await supabase.auth.getUser()
   const path = request.nextUrl.pathname
 
   if (!user) {
-    // Public entry points: landing, guided start, auth flows, read-only design samples,
-    // and explicitly public API routes. `/design-preview` is intentionally unauthenticated
-    // (static/marketing layout checks — it does not load private book or profile data).
     const guestAllowed =
       path.startsWith('/auth') ||
       path.startsWith('/design-preview') ||
@@ -66,7 +67,7 @@ export async function middleware(request: NextRequest) {
     .maybeSingle()
   const role = profile?.role ?? 'client'
   if (profileErr && process.env.NODE_ENV === 'development') {
-    console.warn('[middleware] profiles lookup:', profileErr.message)
+    console.warn('[proxy] profiles lookup:', profileErr.message)
   }
 
   if (path === '/') {
