@@ -2,10 +2,13 @@
   "name": "senimen-books",
   "version": "0.1.0",
   "private": true,
+  "engines": {
+    "node": "22.x"
+  },
   "scripts": {
     "dev": "next dev",
-    "build": "next build",
-    "start": "next start",
+    "build": "cross-env NODE_ENV=production next build",
+    "start": "cross-env NODE_ENV=production next start",
     "lint": "eslint",
     "fonts:embed-italic": "node scripts/embed-cormorant-italic.mjs",
     "fonts:embed-pdf": "node scripts/embed-cormorant-pdf-fonts.mjs",
@@ -31,6 +34,7 @@
     "zustand": "^5.0.13"
   },
   "devDependencies": {
+    "cross-env": "^7.0.3",
     "@fontsource/cormorant": "^5.2.8",
     "@tailwindcss/postcss": "^4",
     "@types/node": "^20",
