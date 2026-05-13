@@ -40,6 +40,7 @@ export async function proxy(request: NextRequest) {
     const guestAllowed =
       path.startsWith('/auth') ||
       path.startsWith('/design-preview') ||
+      path.startsWith('/privacy') ||
       path === '/' ||
       path === '/start' ||
       path.startsWith('/api/public/')

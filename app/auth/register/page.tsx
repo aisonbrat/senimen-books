@@ -1,6 +1,7 @@
 'use client'
 
 import { useEffect, useMemo, useRef, useState, useTransition } from 'react'
+import Link from 'next/link'
 import { useRouter } from 'next/navigation'
 import { clsx } from 'clsx'
 import { createClient } from '@/lib/supabase/client'
@@ -321,14 +322,12 @@ export default function RegisterPage() {
               />
               <span className="text-[13px] font-medium leading-relaxed text-[color:var(--text-secondary)]">
                 Мен{' '}
-                <a
+                <Link
                   href="/privacy"
-                  target="_blank"
-                  rel="noreferrer"
                   className="font-semibold text-[color:var(--accent)] underline-offset-2 hover:underline"
                 >
                   Құпиялылық саясатымен
-                </a>{' '}
+                </Link>{' '}
                 келісемін және деректерімнің кітап шығару үшін қолданылуына рұқсат беремін.
               </span>
             </label>
