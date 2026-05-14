@@ -377,7 +377,7 @@ export default function EditorPage() {
   const mobileSheetChapterPills = (
     <>
       <section>
-        <h3 className="mb-2.5 text-[10px] font-bold uppercase tracking-[0.14em] text-[color:var(--text-muted)]">Кітап бөліктері</h3>
+        <h3 className="mb-2.5 text-[10px] font-bold uppercase tracking-[0.14em] text-[color:var(--text-muted)]">Кітап бөлімдері</h3>
         <div className="flex flex-wrap gap-2">
           {[
             { key: 'algy_soz' as const, label: 'Алғы сөз', hasContent: !!algy_soz?.trim() },

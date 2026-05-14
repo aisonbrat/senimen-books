@@ -162,7 +162,7 @@ export function ProfilePageClient() {
           Жеке ақпарат
         </h2>
         <p className="mt-1 text-[12px] font-medium text-[color:var(--text-muted)]">
-          Тек құпия сөзді өзгертуге болады. Басқа өрістерді өзгерту үшін әкімшіге хабарласыңыз.
+          Тек құпия сөзді өзгертуге болады. Басқа нәрселерді өзгерту үшін менеджерге хабарласыңыз.
         </p>
         <dl className="mt-5 space-y-3 text-[13px]">
           <div className="flex flex-col gap-0.5 sm:flex-row sm:gap-3">

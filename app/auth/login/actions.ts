@@ -69,7 +69,7 @@ export async function loginWithPhone(input: {
         ok: false,
         code: 'unconfirmed',
         message:
-          'Тіркелгі әлі белсендірілмеген. Әкімшіге хабарласыңыз: +7 706 707 47 48',
+          'Әлі тіркелмеген. Менеджерге хабарласыңыз: +7 706 707 47 48',
       }
     }
     // 400 / generic — wrong phone or password. We deliberately do NOT

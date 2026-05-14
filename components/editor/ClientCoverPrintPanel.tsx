@@ -30,7 +30,7 @@ export function ClientCoverPrintPanel({
       </p>
       <p className="mt-1.5 max-w-[60ch] text-[11px] font-medium leading-relaxed text-[color:var(--text-secondary)]">
         Бұл файл <strong className="font-semibold text-[color:var(--text-primary)]">алдын ала көруге және PDF экспортқа кірмейді</strong> — тек
-        әкімші тапсырыс бойынша мұқаба файлын және беттер PDF-тін бөлек жүктеп алады.
+        менеджер тапсырыс бойынша мұқаба файлын және беттер PDF-ті бөлек жүктеп алады.
       </p>
     </>
   )

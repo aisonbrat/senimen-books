@@ -7,7 +7,7 @@ export const TRIAL_WHATSAPP_HREF =
     'Сұрақтарға тегін жауап беріп көрдім. Маған ұнады, мен кітапқа тапсырыс беремін.'
   )
 
-export const TRIAL_BANNER_KK = `Тегін кезең: тек алғашқы ${TRIAL_FREE_QUESTION_COUNT} сұрақты толтыра аласыз. Қалған бөлімдер құлыпталған — толық кітап үшін әкімшіге хабарласыңыз.`
+export const TRIAL_BANNER_KK = `Тегін кезең: тек алғашқы ${TRIAL_FREE_QUESTION_COUNT} сұрақты толтыра аласыз. Қалған бөлімдер құлыпталған — толық кітап үшін менеджерге жазыңыз.`
 
 /** Shown on locked regions and preview thumbnails (replaces older «Құлыпталған» label). */
 export const TRIAL_LOCK_HEADLINE_KK =

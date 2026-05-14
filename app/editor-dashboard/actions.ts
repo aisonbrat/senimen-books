@@ -22,7 +22,7 @@ export async function completeEditorOrder(orderId: string) {
 
   if (profErr || !profile) return { error: 'Профиль табылмады' }
   if (profile.role !== 'editor' && profile.role !== 'admin') {
-    return { error: 'Тек редактор немесе әкімші бұл әрекетті орындай алады' }
+    return { error: 'Тек редактор немесе менеджер бұл әрекетті орындай алады' }
   }
 
   const adminInit = createValidatedServiceRoleClient()
