@@ -89,6 +89,7 @@ export const ORDERS_ADMIN_LIST_SELECT = [
   'submitted_at',
   'completed_at',
   'client_ai_enabled',
+  'trial_mode',
   'admin_cover_print_path',
   'faktiler_text',
   'faktiler_photo_path',

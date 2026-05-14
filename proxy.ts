@@ -4,6 +4,10 @@ import { NextRequest, NextResponse } from 'next/server'
 import { requestIsHttps, supabaseAuthCookieOptions } from '@/lib/supabase/supabaseCookies'
 
 export async function proxy(request: NextRequest) {
+  if (request.nextUrl.pathname === '/start') {
+    return NextResponse.redirect(new URL('/landing', request.url))
+  }
+
   const response = NextResponse.next({ request })
 
   const isHttps = requestIsHttps(request.headers, request.nextUrl)
@@ -43,7 +47,6 @@ export async function proxy(request: NextRequest) {
       path.startsWith('/privacy') ||
       path.startsWith('/landing') ||
       path === '/' ||
-      path === '/start' ||
       path.startsWith('/api/public/')
     if (guestAllowed) return response
 
@@ -59,7 +62,7 @@ export async function proxy(request: NextRequest) {
       return NextResponse.redirect(login)
     }
 
-    return NextResponse.redirect(new URL('/start', request.url))
+    return NextResponse.redirect(new URL('/landing', request.url))
   }
 
   const { data: profile, error: profileErr } = await supabase

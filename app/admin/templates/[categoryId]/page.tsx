@@ -3,6 +3,7 @@ import { useEffect, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { useRouter, useParams } from 'next/navigation'
 import { IconPlus, IconX } from '@/components/ui/icons'
+import { normalizeQuestionFromJson } from '@/lib/admin/templateJsonImport'
 
 const W = '#731616'
 
@@ -30,11 +31,16 @@ export default function ChaptersPage() {
   const [titleKk, setTitleKk] = useState('')
   const [newPartKind, setNewPartKind] = useState<'standard' | 'faktiler'>('standard')
   const [newFixedPhraseId, setNewFixedPhraseId] = useState('')
-  const [categoryPhrases, setCategoryPhrases] = useState<Array<{ id: string; phrase_kk: string }>>([])
+  const [categoryPhrases, setCategoryPhrases] = useState<
+    Array<{ id: string; phrase_kk: string; sort_order: number }>
+  >([])
   const [saving, setSaving] = useState(false)
   const [editingId, setEditingId] = useState<string | null>(null)
   const [editTitle, setEditTitle] = useState('')
   const [focusField, setFocusField] = useState<string | null>(null)
+  const [showBulkImport, setShowBulkImport] = useState(false)
+  const [bulkImportText, setBulkImportText] = useState('')
+  const [bulkImportError, setBulkImportError] = useState<string | null>(null)
   const router = useRouter()
   const params = useParams()
   const categoryId = params.categoryId as string
@@ -50,7 +56,13 @@ export default function ChaptersPage() {
     ])
     setCategory(cat)
     setChapters(chaps || [])
-    setCategoryPhrases((ph || []).map((p: { id: string; phrase_kk: string }) => ({ id: p.id, phrase_kk: p.phrase_kk })))
+    setCategoryPhrases(
+      (ph || []).map((p: { id: string; phrase_kk: string; sort_order?: number }) => ({
+        id: p.id,
+        phrase_kk: p.phrase_kk,
+        sort_order: typeof p.sort_order === 'number' ? p.sort_order : 0,
+      }))
+    )
     setLoading(false)
   }
 
@@ -106,6 +118,232 @@ export default function ChaptersPage() {
     fetchData()
   }
 
+  async function importChaptersWithQuestions(e: React.FormEvent) {
+    e.preventDefault()
+    setBulkImportError(null)
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(bulkImportText.trim().replace(/^\uFEFF/, ''))
+    } catch (err: unknown) {
+      setBulkImportError(err instanceof Error ? err.message : 'JSON қатесі')
+      return
+    }
+    let rawList: unknown[]
+    if (Array.isArray(parsed)) {
+      rawList = parsed
+    } else if (
+      parsed &&
+      typeof parsed === 'object' &&
+      Array.isArray((parsed as Record<string, unknown>).chapters)
+    ) {
+      rawList = (parsed as Record<string, unknown>).chapters as unknown[]
+    } else {
+      setBulkImportError('JSON массив немесе { "chapters": [...] } күтіледі')
+      return
+    }
+
+    const workingPhrases: Array<{ id: string; phrase_kk: string; sort_order: number }> =
+      categoryPhrases.map((p) => ({
+        id: p.id,
+        phrase_kk: p.phrase_kk,
+        sort_order: typeof p.sort_order === 'number' ? p.sort_order : 0,
+      }))
+    let nextPhraseSort =
+      workingPhrases.length === 0
+        ? 0
+        : Math.max(...workingPhrases.map((p) => p.sort_order)) + 1
+
+    const phraseIds = new Set(workingPhrases.map((p) => p.id))
+    const phrasesUsedByExisting = new Set(
+      chapters
+        .map((c: { fixed_phrase_id?: string | null }) => c.fixed_phrase_id)
+        .filter(Boolean) as string[]
+    )
+
+    type StagedChapter = {
+      title_kk: string
+      part_kind: 'standard' | 'faktiler'
+      is_foreword: boolean
+      is_afterword: boolean
+      fixed_phrase_id: string | null
+      questionsRaw: unknown[]
+    }
+
+    const staged: StagedChapter[] = []
+    const phrasesStaged = new Set<string>()
+
+    setSaving(true)
+
+    for (let i = 0; i < rawList.length; i++) {
+      const item = rawList[i]
+      if (!item || typeof item !== 'object') {
+        setBulkImportError(`${i + 1}-элемент: тарау объектісі емес`)
+        setSaving(false)
+        return
+      }
+      const o = item as Record<string, unknown>
+      const title_kk = String(o.title_kk ?? o.title ?? '').trim()
+      if (!title_kk) {
+        setBulkImportError(`${i + 1}-тарау: title_kk немесе title міндетті`)
+        setSaving(false)
+        return
+      }
+      const part_kind = o.part_kind === 'faktiler' ? 'faktiler' : 'standard'
+      const is_foreword = Boolean(o.is_foreword)
+      const is_afterword = Boolean(o.is_afterword)
+      let fixed_phrase_id: string | null = null
+
+      const rawFid =
+        o.fixed_phrase_id != null && String(o.fixed_phrase_id).trim()
+          ? String(o.fixed_phrase_id).trim()
+          : ''
+
+      if (rawFid) {
+        if (!phraseIds.has(rawFid)) {
+          setBulkImportError(`${i + 1}-тарау: fixed_phrase_id осы санатта жоқ`)
+          setSaving(false)
+          return
+        }
+        if (phrasesUsedByExisting.has(rawFid) || phrasesStaged.has(rawFid)) {
+          setBulkImportError(`${i + 1}-тарау: fixed_phrase_id басқа тарауда қолданылған`)
+          setSaving(false)
+          return
+        }
+        if (part_kind === 'standard') {
+          fixed_phrase_id = rawFid
+          phrasesStaged.add(rawFid)
+        }
+      } else {
+        const phraseText = String(o.fixed_phrase_kk ?? o.phrase_kk ?? o.phrase ?? '').trim()
+        if (phraseText && part_kind === 'standard') {
+          let pid: string | null = null
+          for (const p of workingPhrases) {
+            if (
+              p.phrase_kk === phraseText &&
+              !phrasesUsedByExisting.has(p.id) &&
+              !phrasesStaged.has(p.id)
+            ) {
+              pid = p.id
+              break
+            }
+          }
+          if (!pid) {
+            const { data: ins, error: pInsErr } = await supabase
+              .from('category_phrases')
+              .insert({
+                category_id: categoryId,
+                phrase_kk: phraseText,
+                sort_order: nextPhraseSort,
+              })
+              .select('id')
+              .single()
+            if (pInsErr || !ins) {
+              setBulkImportError(pInsErr?.message || 'Фраза қосылмады')
+              setSaving(false)
+              return
+            }
+            pid = ins.id as string
+            workingPhrases.push({ id: pid, phrase_kk: phraseText, sort_order: nextPhraseSort })
+            phraseIds.add(pid)
+            nextPhraseSort += 1
+          }
+          fixed_phrase_id = pid
+          phrasesStaged.add(pid)
+        }
+      }
+
+      const questionsRaw = Array.isArray(o.questions) ? o.questions : []
+      if (part_kind === 'faktiler' && questionsRaw.length > 0) {
+        setBulkImportError(`${i + 1}-тарау: «фактілер» тарауында сұрақтар болмауы керек`)
+        setSaving(false)
+        return
+      }
+      staged.push({
+        title_kk,
+        part_kind,
+        is_foreword,
+        is_afterword,
+        fixed_phrase_id: part_kind === 'standard' ? fixed_phrase_id : null,
+        questionsRaw,
+      })
+    }
+
+    if (staged.length === 0) {
+      setBulkImportError('Жарамды тараулар табылмады')
+      setSaving(false)
+      return
+    }
+
+    const maxSort = chapters.reduce(
+      (m, c) => Math.max(m, typeof c.sort_order === 'number' ? c.sort_order : 0),
+      -1
+    )
+
+    const chapterInserts = staged.map((c, idx) => ({
+      category_id: categoryId,
+      title_kk: c.title_kk,
+      sort_order: maxSort + 1 + idx,
+      is_foreword: c.is_foreword,
+      is_afterword: c.is_afterword,
+      part_kind: c.part_kind,
+      fixed_phrase_id: c.fixed_phrase_id,
+    }))
+    const { data: inserted, error: chErr } = await supabase
+      .from('chapters')
+      .insert(chapterInserts)
+      .select('id')
+
+    if (chErr || !inserted || inserted.length !== staged.length) {
+      setBulkImportError(chErr?.message || 'Тараулар қосылмады')
+      setSaving(false)
+      return
+    }
+
+    const questionRows: Array<{
+      chapter_id: string
+      question_kk: string
+      hint_kk: string | null
+      question_type: string
+      is_required: boolean
+      sort_order: number
+      max_chars?: number | null
+    }> = []
+
+    for (let i = 0; i < staged.length; i++) {
+      const chId = inserted[i].id as string
+      const { questionsRaw, part_kind } = staged[i]
+      if (part_kind === 'faktiler') continue
+      const normalized = questionsRaw
+        .map((q) => normalizeQuestionFromJson(q, chId))
+        .filter(Boolean) as Array<{
+        chapter_id: string
+        question_kk: string
+        hint_kk: string | null
+        question_type: string
+        is_required: boolean
+        max_chars?: number | null
+      }>
+
+      normalized.forEach((r, qidx) => {
+        questionRows.push({ ...r, sort_order: qidx })
+      })
+    }
+
+    if (questionRows.length > 0) {
+      const { error: qErr } = await supabase.from('questions').insert(questionRows)
+      if (qErr) {
+        setBulkImportError(qErr.message)
+        setSaving(false)
+        return
+      }
+    }
+
+    setBulkImportText('')
+    setShowBulkImport(false)
+    setSaving(false)
+    fetchData()
+  }
+
   const focusFor = (key: string) => focusField === key
     ? { borderColor: W, boxShadow: `0 0 0 3px rgba(82,29,29,0.08), 0 1px 4px rgba(82,29,29,0.1)` }
     : {}
@@ -151,7 +389,31 @@ export default function ChaptersPage() {
               Алғы/Соңғы сөз
             </button>
           )}
-          <button onClick={() => setShowForm(!showForm)}
+          <button
+            type="button"
+            onClick={() => {
+              setShowBulkImport(!showBulkImport)
+              setShowForm(false)
+            }}
+            style={{
+              display: 'inline-flex',
+              alignItems: 'center',
+              gap: 8,
+              background: showBulkImport ? '#F5EDEC' : 'white',
+              color: showBulkImport ? W : '#7A6060',
+              border: '1.5px solid #EDE6E6',
+              borderRadius: 10,
+              padding: '10px 16px',
+              fontSize: 13,
+              fontWeight: 600,
+              cursor: 'pointer',
+              transition: 'all 150ms',
+              boxShadow: '0 1px 4px rgba(82,29,29,0.06)',
+            }}
+          >
+            JSON: тараулар + сұрақтар
+          </button>
+          <button onClick={() => { setShowForm(!showForm); setShowBulkImport(false) }}
             style={{ display: 'inline-flex', alignItems: 'center', gap: 8, background: showForm ? '#F5EDEC' : W, color: showForm ? W : 'white', border: 'none', borderRadius: 10, padding: '10px 18px', fontSize: 13, fontWeight: 700, cursor: 'pointer', transition: 'all 200ms cubic-bezier(0.4,0,0.2,1)', boxShadow: showForm ? 'none' : 'inset 0 1px 0 rgba(255,255,255,0.1), 0 4px 16px rgba(82,29,29,0.3)' }}
             onMouseEnter={e => { if (!showForm) { e.currentTarget.style.transform = 'translateY(-1px)'; e.currentTarget.style.boxShadow = 'inset 0 1px 0 rgba(255,255,255,0.1), 0 8px 24px rgba(82,29,29,0.35)' } }}
             onMouseLeave={e => { e.currentTarget.style.transform = 'translateY(0)'; e.currentTarget.style.boxShadow = showForm ? 'none' : 'inset 0 1px 0 rgba(255,255,255,0.1), 0 4px 16px rgba(82,29,29,0.3)' }}>
@@ -169,6 +431,170 @@ export default function ChaptersPage() {
           </button>
         </div>
       </div>
+
+      {showBulkImport && (
+        <div
+          style={{
+            background: 'white',
+            borderRadius: 18,
+            padding: '28px 32px',
+            marginBottom: 20,
+            boxShadow: '0 2px 12px rgba(82,29,29,0.06), 0 1px 4px rgba(82,29,29,0.04)',
+          }}
+        >
+          <h3
+            style={{
+              fontSize: 15,
+              fontWeight: 700,
+              color: '#1C1010',
+              margin: '0 0 8px',
+              letterSpacing: '-0.02em',
+            }}
+          >
+            JSON: бірден тараулар мен сұрақтар
+          </h3>
+          <p style={{ fontSize: 12, color: '#B8A8A8', margin: '0 0 12px', fontWeight: 500, lineHeight: 1.5 }}>
+            Жаңа тараулар ағымдағы тізімнің соңына қосылады. Әр тарау үшін{' '}
+            <code style={{ background: '#F5F0F0', padding: '2px 6px', borderRadius: 5, fontSize: 11, color: W }}>
+              title_kk
+            </code>
+            , опционал:{' '}
+            <code style={{ background: '#F5F0F0', padding: '2px 6px', borderRadius: 5, fontSize: 11, color: W }}>
+              part_kind
+            </code>{' '}
+            (
+            <code style={{ background: '#F5F0F0', padding: '2px 6px', borderRadius: 5, fontSize: 11, color: W }}>
+              standard
+            </code>{' '}
+            /{' '}
+            <code style={{ background: '#F5F0F0', padding: '2px 6px', borderRadius: 5, fontSize: 11, color: W }}>
+              faktiler
+            </code>
+            ),{' '}
+            <code style={{ background: '#F5F0F0', padding: '2px 6px', borderRadius: 5, fontSize: 11, color: W }}>
+              is_foreword
+            </code>
+            ,{' '}
+            <code style={{ background: '#F5F0F0', padding: '2px 6px', borderRadius: 5, fontSize: 11, color: W }}>
+              is_afterword
+            </code>
+            ,{' '}
+            <code style={{ background: '#F5F0F0', padding: '2px 6px', borderRadius: 5, fontSize: 11, color: W }}>
+              fixed_phrase_id
+            </code>{' '}
+            (uuid) немесе мәтінмен:{' '}
+            <code style={{ background: '#F5F0F0', padding: '2px 6px', borderRadius: 5, fontSize: 11, color: W }}>
+              fixed_phrase_kk
+            </code>
+            /{' '}
+            <code style={{ background: '#F5F0F0', padding: '2px 6px', borderRadius: 5, fontSize: 11, color: W }}>
+              phrase_kk
+            </code>
+            — тұрақты бет фразасы (бос емес мәтін: бар фразаны қайта қолданады немесе жаңа қосады; uuid болса uuid басым).{' '}
+            <code style={{ background: '#F5F0F0', padding: '2px 6px', borderRadius: 5, fontSize: 11, color: W }}>
+              questions
+            </code>{' '}
+            — бір тараудың JSON сұрақтары (бір тараудағы «JSON жүктеу» форматымен бірдей).
+          </p>
+          <pre
+            style={{
+              fontSize: 11,
+              color: '#7A6060',
+              background: '#FAF7F7',
+              padding: '12px 14px',
+              borderRadius: 10,
+              overflow: 'auto',
+              margin: '0 0 16px',
+              border: '1px solid #EDE6E6',
+              lineHeight: 1.45,
+            }}
+          >
+{`[
+  {
+    "title_kk": "Балалық шақ",
+    "part_kind": "standard",
+    "fixed_phrase_kk": "Тұрақты бетке арналған фраза мәтіні",
+    "questions": [
+      { "question_kk": "Сұрақ мәтіні", "hint_kk": "Көмек", "is_required": false, "question_type": "textarea" }
+    ]
+  },
+  { "title_kk": "Фактілер", "part_kind": "faktiler", "questions": [] }
+]`}
+          </pre>
+          <form onSubmit={importChaptersWithQuestions} style={{ display: 'flex', flexDirection: 'column', gap: 14 }}>
+            <textarea
+              value={bulkImportText}
+              onChange={(e) => setBulkImportText(e.target.value)}
+              required
+              rows={10}
+              placeholder={'[\n  {\n    "title_kk": "Тарау атауы",\n    "fixed_phrase_kk": "Тұрақты фраза (опционал)",\n    "questions": [{ "question_kk": "..." }]\n  }\n]'}
+              onFocus={() => setFocusField('bulk')}
+              onBlur={() => setFocusField(null)}
+              style={{
+                ...inputStyle,
+                fontFamily: 'monospace',
+                resize: 'vertical',
+                minHeight: 200,
+                ...focusFor('bulk'),
+              }}
+            />
+            {bulkImportError && (
+              <div
+                style={{
+                  background: '#FFF5F5',
+                  color: '#991B1B',
+                  padding: '12px 16px',
+                  borderRadius: 10,
+                  fontSize: 13,
+                  fontWeight: 500,
+                  border: '1px solid rgba(153,27,27,0.12)',
+                }}
+              >
+                {bulkImportError}
+              </div>
+            )}
+            <div style={{ display: 'flex', gap: 10 }}>
+              <button
+                type="button"
+                onClick={() => {
+                  setShowBulkImport(false)
+                  setBulkImportError(null)
+                }}
+                style={{
+                  padding: '10px 20px',
+                  borderRadius: 10,
+                  border: '1.5px solid #EDE6E6',
+                  background: 'white',
+                  fontSize: 13,
+                  cursor: 'pointer',
+                  color: '#7A6060',
+                  fontWeight: 600,
+                }}
+              >
+                Болдырмау
+              </button>
+              <button
+                type="submit"
+                disabled={saving}
+                style={{
+                  padding: '10px 20px',
+                  borderRadius: 10,
+                  border: 'none',
+                  background: W,
+                  color: 'white',
+                  fontSize: 13,
+                  fontWeight: 700,
+                  cursor: 'pointer',
+                  boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.1), 0 4px 12px rgba(82,29,29,0.25)',
+                  opacity: saving ? 0.7 : 1,
+                }}
+              >
+                {saving ? 'Импорттауда...' : 'Импорттау'}
+              </button>
+            </div>
+          </form>
+        </div>
+      )}
 
       {showForm && (
         <div style={{ background: 'white', borderRadius: 18, padding: '28px 32px', marginBottom: 20, boxShadow: '0 2px 12px rgba(82,29,29,0.06), 0 1px 4px rgba(82,29,29,0.04)' }}>

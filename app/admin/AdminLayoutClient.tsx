@@ -14,12 +14,19 @@ const NAV = [
   { label: 'Профиль', href: '/admin/profile', icon: '○' },
 ]
 
+const NAV_COLLAPSE_LS_KEY = 'senimen-admin-nav-collapsed'
+
 export default function AdminLayoutClient({ children }: { children: React.ReactNode }) {
   const [user, setUser] = useState<any>(null)
   const [navOpen, setNavOpen] = useState(false)
+  const [desktopCollapsed, setDesktopCollapsed] = useState(false)
+  const [desktopPeek, setDesktopPeek] = useState(false)
   const pathname = usePathname()
   const router = useRouter()
   const supabaseRef = useRef<SupabaseClient | null>(null)
+
+  const navWide = !desktopCollapsed || desktopPeek
+  const navW = navWide ? 220 : 72
 
   const getSupabase = useCallback((): SupabaseClient | null => {
     if (typeof window === 'undefined') return null
@@ -31,6 +38,16 @@ export default function AdminLayoutClient({ children }: { children: React.ReactN
       }
     }
     return supabaseRef.current
+  }, [])
+
+  useEffect(() => {
+    try {
+      if (typeof localStorage !== 'undefined' && localStorage.getItem(NAV_COLLAPSE_LS_KEY) === '1') {
+        setDesktopCollapsed(true)
+      }
+    } catch {
+      /* ignore */
+    }
   }, [])
 
   useEffect(() => {
@@ -46,6 +63,27 @@ export default function AdminLayoutClient({ children }: { children: React.ReactN
     setNavOpen(false)
   }, [pathname])
 
+  const setCollapsedPersist = useCallback((next: boolean) => {
+    setDesktopCollapsed(next)
+    setDesktopPeek(false)
+    try {
+      localStorage.setItem(NAV_COLLAPSE_LS_KEY, next ? '1' : '0')
+    } catch {
+      /* ignore */
+    }
+  }, [])
+
+  const handleAsidePointerEnter = () => {
+    if (typeof window === 'undefined') return
+    if (window.matchMedia('(min-width:768px)').matches && desktopCollapsed) {
+      setDesktopPeek(true)
+    }
+  }
+
+  const handleAsidePointerLeave = () => {
+    setDesktopPeek(false)
+  }
+
   async function handleLogout() {
     const supabase = getSupabase()
     if (!supabase) return
@@ -59,7 +97,10 @@ export default function AdminLayoutClient({ children }: { children: React.ReactN
   }
 
   return (
-    <div className="flex min-h-screen bg-[color:var(--bg-page)]">
+    <div
+      className="flex min-h-screen bg-[color:var(--bg-page)]"
+      style={{ ['--admin-nav-w' as string]: `${navW}px` }}
+    >
       {navOpen && (
         <button
           type="button"
@@ -82,18 +123,30 @@ export default function AdminLayoutClient({ children }: { children: React.ReactN
       </header>
 
       <aside
+        onMouseEnter={handleAsidePointerEnter}
+        onMouseLeave={handleAsidePointerLeave}
         className={clsx(
-          'fixed bottom-0 left-0 top-0 z-50 flex w-[min(260px,88vw)] shrink-0 flex-col',
+          'fixed bottom-0 left-0 top-0 z-50 flex shrink-0 flex-col',
           'border-r border-[color:var(--border)] bg-[color:var(--surface)]',
-          'transition-transform duration-200 ease-out',
-          'md:z-10 md:w-[220px] md:translate-x-0',
+          'transition-[transform,width] duration-200 ease-out',
+          'w-[min(260px,88vw)] md:z-10 md:w-[var(--admin-nav-w)]',
           navOpen ? 'translate-x-0 shadow-[var(--shadow-xl)]' : '-translate-x-full md:translate-x-0'
         )}
       >
-        <div className="flex items-start justify-between gap-2 px-5 pb-5 pt-[max(1.25rem,env(safe-area-inset-top))] md:block md:pt-6">
-          <div>
-            <img src="/logo.svg" alt="Сенімен" className="h-[28px] w-auto object-contain" />
-            <div className="mt-3 inline-flex items-center gap-1.5 rounded-[var(--radius-sm)] border border-[color:var(--accent-ring)] bg-[color:var(--accent-surface)] px-2 py-1">
+        <div
+          className={clsx(
+            'flex items-start justify-between gap-2 px-5 pb-5 pt-[max(1.25rem,env(safe-area-inset-top))] md:block md:pt-6',
+            !navWide && 'md:px-3'
+          )}
+        >
+          <div className={clsx(!navWide && 'md:flex md:flex-col md:items-center')}>
+            <img src="/logo.svg" alt="Сенімен" className={clsx('h-[28px] w-auto object-contain', !navWide && 'md:mx-auto')} />
+            <div
+              className={clsx(
+                'mt-3 inline-flex items-center gap-1.5 rounded-[var(--radius-sm)] border border-[color:var(--accent-ring)] bg-[color:var(--accent-surface)] px-2 py-1',
+                !navWide && 'md:hidden'
+              )}
+            >
               <span className="size-1.5 shrink-0 rounded-full bg-[color:var(--accent)]" aria-hidden />
               <span className="text-[10px] font-bold uppercase tracking-[0.14em] text-[color:var(--accent)]">Admin</span>
             </div>
@@ -109,7 +162,7 @@ export default function AdminLayoutClient({ children }: { children: React.ReactN
 
         <div className="mx-4 h-px bg-[color:var(--border)]" />
 
-        <nav className="flex flex-1 flex-col gap-0.5 overflow-y-auto px-2.5 py-3">
+        <nav className="flex flex-1 flex-col gap-0.5 overflow-y-auto overflow-x-hidden px-2.5 py-3">
           {NAV.map((item) => {
             const isActive =
               pathname === item.href || (item.href !== '/admin/orders' && pathname.startsWith(item.href))
@@ -117,10 +170,12 @@ export default function AdminLayoutClient({ children }: { children: React.ReactN
               <button
                 key={item.href}
                 type="button"
+                title={item.label}
                 onClick={() => go(item.href)}
                 className={clsx(
                   'flex w-full items-center gap-2.5 rounded-[var(--radius-md)] px-3 py-2.5 text-left text-[13px] font-medium',
                   'transition-colors duration-[var(--transition)]',
+                  !navWide && 'md:justify-center md:gap-0 md:px-2',
                   isActive
                     ? 'bg-[color:var(--accent-surface)] font-semibold text-[color:var(--accent)]'
                     : 'text-[color:var(--text-secondary)] hover:bg-[color:var(--surface-subtle)] hover:text-[color:var(--text-primary)]'
@@ -129,14 +184,28 @@ export default function AdminLayoutClient({ children }: { children: React.ReactN
                 <span className={clsx('text-[14px] leading-none', isActive ? 'opacity-80' : 'opacity-40')} aria-hidden>
                   {item.icon}
                 </span>
-                {item.label}
+                <span className={clsx('truncate', !navWide && 'md:hidden')}>{item.label}</span>
               </button>
             )
           })}
         </nav>
 
         <div className="border-t border-[color:var(--border)] px-4 py-4">
-          <div className="mb-2 truncate text-[11px] font-medium text-[color:var(--text-muted)]">{user?.email}</div>
+          <button
+            type="button"
+            className="mb-3 hidden w-full items-center justify-center gap-2 rounded-[var(--radius-md)] border border-[color:var(--border)] bg-[color:var(--surface-subtle)] py-2 text-[11px] font-bold text-[color:var(--text-secondary)] transition-colors hover:bg-[color:var(--border)] md:flex"
+            onClick={() => setCollapsedPersist(!desktopCollapsed)}
+            aria-pressed={desktopCollapsed}
+            title={desktopCollapsed ? 'Мәзірді ашу (немесе тінтуірді үстінде ұстаңыз)' : 'Мәзірді жиырау'}
+          >
+            <span aria-hidden className="text-[13px]">
+              {desktopCollapsed ? '⟩' : '⟨'}
+            </span>
+            <span className={clsx(!navWide && 'md:hidden')}>{desktopCollapsed ? 'Кеңейту' : 'Жиырау'}</span>
+          </button>
+          <div className={clsx('mb-2 truncate text-[11px] font-medium text-[color:var(--text-muted)]', !navWide && 'md:hidden')}>
+            {user?.email}
+          </div>
           <button
             type="button"
             onClick={() => void handleLogout()}
@@ -147,7 +216,9 @@ export default function AdminLayoutClient({ children }: { children: React.ReactN
         </div>
       </aside>
 
-      <div className="min-h-screen flex-1 pt-14 md:pl-[220px] md:pt-0">{children}</div>
+      <div className="min-h-screen flex-1 pt-14 transition-[padding] duration-200 ease-out md:pl-[var(--admin-nav-w)] md:pt-0">
+        {children}
+      </div>
     </div>
   )
 }

@@ -7,9 +7,18 @@ import { IconPlus, IconX, IconPencil, IconTrash, IconQuotes, IconRows } from '@/
 const W = '#731616'
 
 const inputStyle: React.CSSProperties = {
-  width: '100%', padding: '11px 14px', borderRadius: 10, border: '1.5px solid #EDE6E6',
-  background: 'white', fontSize: 13, boxSizing: 'border-box', outline: 'none',
-  color: '#1C1010', fontFamily: 'inherit',
+  width: '100%',
+  padding: '11px 14px',
+  borderRadius: 10,
+  borderWidth: '1.5px',
+  borderStyle: 'solid',
+  borderColor: '#EDE6E6',
+  background: 'white',
+  fontSize: 13,
+  boxSizing: 'border-box',
+  outline: 'none',
+  color: '#1C1010',
+  fontFamily: 'inherit',
   transition: 'border-color 200ms cubic-bezier(0.4,0,0.2,1), box-shadow 200ms cubic-bezier(0.4,0,0.2,1)',
 }
 

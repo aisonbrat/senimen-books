@@ -36,3 +36,14 @@ export async function adminSetOrderClientAiEnabled(orderId: string, enabled: boo
   if (error) return { error: error.message }
   return { success: true as const }
 }
+
+export async function adminDeleteOrder(orderId: string) {
+  const gate = await requireAdminOrManager()
+  if (!gate.ok) return { error: gate.error }
+
+  const { client: admin, error: keyErr } = makeServiceClient()
+  if (!admin) return { error: keyErr }
+  const { error } = await admin.from('orders').delete().eq('id', orderId)
+  if (error) return { error: error.message }
+  return { success: true as const }
+}

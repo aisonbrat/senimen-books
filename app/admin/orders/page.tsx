@@ -1,12 +1,12 @@
 'use client'
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from 'react'
 import { clsx } from 'clsx'
 import { createClient } from '@/lib/supabase/client'
 import { downloadBookPhotoBlob, getDisplayableUrl } from '@/lib/storage/bookPhotos'
 import { exportBookToPDF, type ExportOrderInput } from '@/lib/utils/pdfExport'
 import { formatPhoneForDisplay } from '@/lib/utils/phone'
-import { adminSetOrderClientAiEnabled, adminUpdateOrderStatus } from './actions'
+import { adminDeleteOrder, adminSetOrderClientAiEnabled, adminUpdateOrderStatus } from './actions'
 import { Button } from '@/components/ui/Button'
 import {
   ORDER_STATUS_ORDER,
@@ -154,6 +154,7 @@ type AdminOrderListRow = {
   submitted_at?: string | null
   completed_at?: string | null
   client_ai_enabled?: boolean
+  trial_mode?: boolean | null
   admin_cover_print_path?: string | null
   faktiler_text?: string | null
   faktiler_photo_path?: string | null
@@ -281,6 +282,9 @@ export default function OrdersPage() {
   const [sortKey, setSortKey] = useState<'created_desc' | 'created_asc' | 'title_asc'>('created_desc')
   const [updatingId, setUpdatingId] = useState<string | null>(null)
   const [aiUpdatingId, setAiUpdatingId] = useState<string | null>(null)
+  const [deleteDialog, setDeleteDialog] = useState<{ id: string; bookTitle: string } | null>(null)
+  const [deleteError, setDeleteError] = useState<string | null>(null)
+  const [isDeletePending, startDeleteTransition] = useTransition()
   const [totalMatching, setTotalMatching] = useState<number | null>(null)
   const [statusCounts, setStatusCounts] = useState<Record<string, number>>({ all: 0 })
 
@@ -299,7 +303,14 @@ export default function OrdersPage() {
     const head = () => supabase.from('orders').select('id', { count: 'exact', head: true })
     const allRes = await head()
     if (allRes.error) return
-    const perStatus = await Promise.all(ORDER_STATUS_ORDER.map((s) => head().eq('status', s)))
+    const perStatus = await Promise.all(
+      ORDER_STATUS_ORDER.map((s) => {
+        if (s === 'filling') {
+          return head().eq('status', s).eq('trial_mode', false)
+        }
+        return head().eq('status', s)
+      }),
+    )
     if (perStatus.some((r) => r.error)) return
     const byStatus = Object.fromEntries(
       ORDER_STATUS_ORDER.map((s, i) => [s, perStatus[i].count ?? 0]),
@@ -372,7 +383,12 @@ export default function OrdersPage() {
         const phoneIds = await resolveProfileIdsByPhoneDigits(supabase, debouncedSearch)
 
         let q = supabase.from('orders').select(ORDERS_ADMIN_LIST_SELECT, { count: 'exact' })
-        if (filter !== 'all') q = q.eq('status', filter)
+        if (filter !== 'all') {
+          q = q.eq('status', filter)
+          if (filter === 'filling') {
+            q = q.eq('trial_mode', false)
+          }
+        }
         const mb = monthFilter ? localMonthBoundsIso(monthFilter) : null
         if (mb) q = q.gte('created_at', mb.start).lte('created_at', mb.end)
 
@@ -518,6 +534,21 @@ export default function OrdersPage() {
     } finally { setAiUpdatingId(null) }
   }
 
+  function confirmDeleteOrder() {
+    if (!deleteDialog) return
+    const orderId = deleteDialog.id
+    setDeleteError(null)
+    startDeleteTransition(async () => {
+      const res = await adminDeleteOrder(orderId)
+      if ('error' in res && res.error) {
+        setDeleteError(res.error)
+        return
+      }
+      setDeleteDialog(null)
+      await reloadListAndCounts()
+    })
+  }
+
   const hasMore = totalMatching !== null && orders.length < totalMatching
 
   const isFiltered = searchInput.trim() || monthFilter || filter !== 'all'
@@ -615,6 +646,17 @@ export default function OrdersPage() {
                   />
                 )}
                 {s === 'all' ? 'Барлығы' : orderStatusLabel(s)}
+                {s === 'filling' ? (
+                  <span
+                    className={clsx(
+                      'hidden text-[10px] font-medium sm:inline',
+                      active ? 'text-white/75' : 'text-[color:var(--text-muted)]'
+                    )}
+                    title="Тегін нұсқадағы тапсырыстар осы сүзгіде көрсетілмейді"
+                  >
+                    (толық)
+                  </span>
+                ) : null}
                 <span className={clsx('tabular-nums text-[11px]', active ? 'opacity-60' : 'text-[color:var(--text-muted)]')}>
                   {cnt}
                 </span>
@@ -622,6 +664,14 @@ export default function OrdersPage() {
             )
           })}
         </div>
+        <p className="mb-4 text-[11px] leading-relaxed text-[color:var(--text-muted)]">
+          «Толтырылуда» сүзгісі тек{' '}
+          <strong className="font-semibold text-[color:var(--text-secondary)]">толық қолжетімділік</strong>
+          берілген тапсырыстарды көрсетеді. Тегін нұсқадағы тапсырыстарды{' '}
+          <strong className="font-semibold text-[color:var(--text-secondary)]">Тегін кезең</strong> бетінен бақылаңыз;
+          жалпы кестеде олар <strong className="font-semibold text-[color:var(--text-secondary)]">«Тегін нұсқа»</strong>{' '}
+          белгісімен анықталады.
+        </p>
 
         {/* Month + sort row */}
         <div className="flex flex-wrap items-center gap-3">
@@ -701,9 +751,16 @@ export default function OrdersPage() {
                     <div className="text-[14px] font-semibold leading-snug text-[color:var(--text-primary)]">
                       {order.book_title}
                     </div>
-                    <span className={orderStatusWorkspacePill(order.status)}>
-                      {orderStatusLabel(order.status)}
-                    </span>
+                    <div className="flex shrink-0 flex-col items-end gap-1">
+                      {order.trial_mode ? (
+                        <span className="rounded-[var(--radius-sm)] bg-amber-100 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-amber-950 ring-1 ring-amber-200">
+                          Тегін нұсқа
+                        </span>
+                      ) : null}
+                      <span className={orderStatusWorkspacePill(order.status)}>
+                        {orderStatusLabel(order.status)}
+                      </span>
+                    </div>
                   </div>
                   {order.category_id && categories[order.category_id] ? (
                     <span className="mb-2 inline-flex rounded-[var(--radius-sm)] border border-[color:var(--accent-ring)] bg-[color:var(--accent-surface)] px-2 py-0.5 text-[11px] font-semibold text-[color:var(--accent)]">
@@ -750,6 +807,22 @@ export default function OrdersPage() {
                       </select>
                       <PDFButton order={order} />
                       <AdminCoverDownloadButton order={order} />
+                      <Button
+                        type="button"
+                        variant="secondary"
+                        size="sm"
+                        disabled={isDeletePending}
+                        className="border-red-200 bg-red-50/90 text-red-800 hover:border-red-300 hover:bg-red-100"
+                        onClick={() => {
+                          setDeleteError(null)
+                          setDeleteDialog({
+                            id: order.id,
+                            bookTitle: (order.book_title || '').trim() || 'Тапсырыс',
+                          })
+                        }}
+                      >
+                        Жою
+                      </Button>
                     </div>
                   </div>
                 </div>
@@ -760,10 +833,10 @@ export default function OrdersPage() {
           {/* Desktop table */}
           <div className="hidden overflow-hidden rounded-[var(--radius-lg)] bg-[color:var(--surface)] shadow-[0_1px_3px_rgba(15,23,42,0.05),0_4px_16px_rgba(15,23,42,0.06)] md:block">
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[1080px] border-collapse">
+              <table className="w-full min-w-[1240px] border-collapse">
                 <thead>
                   <tr className="border-b border-[color:var(--border)] bg-[color:var(--surface-subtle)]">
-                    {['Кітап', 'Түрі', 'Автор', 'Алушы', 'Телефон', 'Мекенжай', 'Редактор', 'Күні', 'Статус', 'Өзгерту', 'AI', 'PDF · Мұқаба'].map((h) => (
+                    {['Кітап', 'Түрі', 'Нұсқа', 'Автор', 'Алушы', 'Телефон', 'Мекенжай', 'Редактор', 'Күні', 'Статус', 'Өзгерту', 'AI', 'PDF · Мұқаба', 'Жою'].map((h) => (
                       <th
                         key={h}
                         className="whitespace-nowrap px-4 py-3 text-left text-[10px] font-bold uppercase tracking-[0.06em] text-[color:var(--text-muted)]"
@@ -793,6 +866,18 @@ export default function OrdersPage() {
                             {categories[order.category_id]}
                           </span>
                         ) : null}
+                      </td>
+                      <td className="px-4 py-3">
+                        {order.trial_mode ? (
+                          <span
+                            className="inline-flex whitespace-nowrap rounded-[var(--radius-sm)] bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-950 ring-1 ring-amber-200"
+                            title="Тегін кезең — толық қолжетімділік әлі берілмеген"
+                          >
+                            Тегін нұсқа
+                          </span>
+                        ) : (
+                          <span className="text-[11px] font-medium text-[color:var(--text-muted)]">Толық</span>
+                        )}
                       </td>
                       <td className="px-4 py-3 text-[13px] text-[color:var(--text-secondary)]">{order.author_name}</td>
                       <td className="px-4 py-3 text-[13px] text-[color:var(--text-secondary)]">{order.recipient_name}</td>
@@ -869,6 +954,24 @@ export default function OrdersPage() {
                           <AdminCoverDownloadButton order={order} />
                         </div>
                       </td>
+                      <td className="whitespace-nowrap px-4 py-3">
+                        <Button
+                          type="button"
+                          variant="secondary"
+                          size="sm"
+                          disabled={isDeletePending}
+                          className="border-red-200 bg-red-50/90 text-red-800 hover:border-red-300 hover:bg-red-100"
+                          onClick={() => {
+                            setDeleteError(null)
+                            setDeleteDialog({
+                              id: order.id,
+                              bookTitle: (order.book_title || '').trim() || 'Тапсырыс',
+                            })
+                          }}
+                        >
+                          Жою
+                        </Button>
+                      </td>
                     </tr>
                   ))}
                 </tbody>
@@ -895,6 +998,58 @@ export default function OrdersPage() {
           )}
         </>
       )}
+
+      {deleteDialog ? (
+        <div
+          className="fixed inset-0 z-[100] flex items-center justify-center bg-black/45 p-4"
+          role="alertdialog"
+          aria-modal="true"
+          aria-labelledby="admin-delete-order-title"
+        >
+          <div className="w-full max-w-md rounded-2xl border border-[color:var(--border)] bg-[color:var(--surface)] p-6 shadow-[var(--shadow-xl)]">
+            <h2
+              id="admin-delete-order-title"
+              className="text-[1.05rem] font-semibold tracking-tight text-[color:var(--text-primary)]"
+            >
+              Тапсырысты жою
+            </h2>
+            <p className="mt-3 text-[13px] leading-relaxed text-[color:var(--text-secondary)]">
+              <span className="font-semibold text-[color:var(--text-primary)]">«{deleteDialog.bookTitle}»</span>{' '}
+              тапсырысын мүлдем жойғыңыз келе ме? Жауаптар мен файлдар қоса жойылуы мүмкін; әрекетті қайтару қиын.
+            </p>
+            {deleteError ? (
+              <p className="mt-3 rounded-[var(--radius-md)] border border-red-200 bg-red-50/90 px-3 py-2 text-[12px] font-medium text-red-900">
+                {deleteError}
+              </p>
+            ) : null}
+            <div className="mt-6 flex flex-wrap gap-2">
+              <Button
+                type="button"
+                variant="secondary"
+                className="min-w-[120px]"
+                disabled={isDeletePending}
+                onClick={() => {
+                  if (!isDeletePending) {
+                    setDeleteError(null)
+                    setDeleteDialog(null)
+                  }
+                }}
+              >
+                Болдырмау
+              </Button>
+              <Button
+                type="button"
+                variant="primary"
+                className="min-w-[120px] bg-red-600 hover:bg-red-700"
+                disabled={isDeletePending}
+                onClick={() => void confirmDeleteOrder()}
+              >
+                {isDeletePending ? 'Жойылуда…' : 'Иә, жою'}
+              </Button>
+            </div>
+          </div>
+        </div>
+      ) : null}
     </div>
   )
 }

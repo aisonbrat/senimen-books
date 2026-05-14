@@ -3,13 +3,23 @@ import { useEffect, useState } from 'react'
 import { createClient } from '@/lib/supabase/client'
 import { useRouter, useParams } from 'next/navigation'
 import { IconPlus, IconX } from '@/components/ui/icons'
+import { normalizeQuestionFromJson } from '@/lib/admin/templateJsonImport'
 
 const W = '#731616'
 
 const inputStyle: React.CSSProperties = {
-  width: '100%', padding: '11px 14px', borderRadius: 10, border: '1.5px solid #EDE6E6',
-  background: 'white', fontSize: 13, boxSizing: 'border-box', outline: 'none',
-  color: '#1C1010', fontFamily: 'inherit',
+  width: '100%',
+  padding: '11px 14px',
+  borderRadius: 10,
+  borderWidth: '1.5px',
+  borderStyle: 'solid',
+  borderColor: '#EDE6E6',
+  background: 'white',
+  fontSize: 13,
+  boxSizing: 'border-box',
+  outline: 'none',
+  color: '#1C1010',
+  fontFamily: 'inherit',
   transition: 'border-color 200ms cubic-bezier(0.4,0,0.2,1), box-shadow 200ms cubic-bezier(0.4,0,0.2,1)',
 }
 
@@ -74,19 +84,6 @@ export default function QuestionsPage() {
     fetchData()
   }
 
-  const QUESTION_TYPES = new Set(['text', 'textarea', 'photo', 'photo_with_text'])
-
-  function coerceHint(v: unknown): string | null {
-    if (v == null) return null
-    if (typeof v === 'string') return v.trim() || null
-    if (typeof v === 'number' || typeof v === 'boolean') return String(v)
-    try {
-      return JSON.stringify(v)
-    } catch {
-      return null
-    }
-  }
-
   async function importQuestions(e: React.FormEvent) {
     e.preventDefault()
     setImportError(null)
@@ -104,28 +101,14 @@ export default function QuestionsPage() {
     }
 
     const normalized = parsed
-      .map((item: unknown) => {
-        if (!item || typeof item !== 'object') return null
-        const o = item as Record<string, unknown>
-        const qk = String(o.question_kk ?? o.question ?? '').trim()
-        if (!qk) return null
-        const qtRaw = o.question_type
-        const question_type =
-          typeof qtRaw === 'string' && QUESTION_TYPES.has(qtRaw) ? qtRaw : 'textarea'
-        return {
-          chapter_id: chapterId,
-          question_kk: qk,
-          hint_kk: coerceHint(o.hint_kk ?? o.hint),
-          question_type,
-          is_required: Boolean(o.is_required),
-        }
-      })
+      .map((item: unknown) => normalizeQuestionFromJson(item, chapterId))
       .filter(Boolean) as Array<{
       chapter_id: string
       question_kk: string
       hint_kk: string | null
       question_type: string
       is_required: boolean
+      max_chars?: number | null
     }>
 
     if (normalized.length === 0) {

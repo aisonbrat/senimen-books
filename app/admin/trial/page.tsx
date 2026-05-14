@@ -6,9 +6,9 @@ import { createClient } from '@/lib/supabase/client'
 import {
   adminAddGlobalTrialCategory,
   adminGrantFullBookAccess,
-  adminDeleteOrder,
   adminRemoveGlobalTrialCategory,
 } from '@/app/admin/users/actions'
+import { adminDeleteOrder } from '@/app/admin/orders/actions'
 import { Button } from '@/components/ui/Button'
 import { formatPhoneForDisplay } from '@/lib/utils/phone'
 import { orderStatusLabel, orderStatusPillClass } from '@/lib/design/order-status'

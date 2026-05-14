@@ -39,7 +39,7 @@ export default function TrialStartLandingPage() {
       {/* ─── Header ──────────────────────────────────────────────────────── */}
       <header className="sticky top-0 z-20 border-b border-[color:var(--border)] bg-white">
         <div className="mx-auto flex h-14 max-w-6xl items-center justify-between px-5 sm:px-8">
-          <Link href="/start" aria-label="Басы">
+          <Link href="/landing" aria-label="Басы">
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img src="/logo.svg" alt="Сени мен Books" className="h-8 w-auto" />
           </Link>

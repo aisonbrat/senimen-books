@@ -51,7 +51,7 @@ export default function PrivacyPage() {
       {/* ── Header ── */}
       <header className="sticky top-0 z-30 border-b border-[var(--border)] bg-white/90 backdrop-blur-sm">
         <div className="mx-auto flex max-w-5xl items-center justify-between px-5 py-3 sm:px-8">
-          <Link href="/start" className="transition-opacity hover:opacity-75">
+          <Link href="/landing" className="transition-opacity hover:opacity-75">
             {/* eslint-disable-next-line @next/next/no-img-element */}
             <img src="/logo.svg" alt="Senimen Books" className="h-7 w-auto" width={132} height={36} decoding="async" />
           </Link>

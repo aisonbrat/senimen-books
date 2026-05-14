@@ -205,22 +205,14 @@ export async function adminGrantFullBookAccess(orderId: string) {
 export async function adminDeleteUser(userId: string) {
   const gate = await requireAdminOrManager()
   if (!gate.ok) return { error: gate.error }
+  if (gate.user.id === userId) {
+    return { error: 'Өз аккаунтыңызды жоюға болмайды' }
+  }
 
   const { client: admin, error: keyErr } = makeServiceClient()
   if (!admin) return { error: keyErr }
   const { error } = await admin.auth.admin.deleteUser(userId)
   if (error) return { error: error.message }
   await admin.from('profiles').delete().eq('id', userId)
-  return { success: true }
-}
-
-export async function adminDeleteOrder(orderId: string) {
-  const gate = await requireAdminOrManager()
-  if (!gate.ok) return { error: gate.error }
-
-  const { client: admin, error: keyErr } = makeServiceClient()
-  if (!admin) return { error: keyErr }
-  const { error } = await admin.from('orders').delete().eq('id', orderId)
-  if (error) return { error: error.message }
   return { success: true }
 }

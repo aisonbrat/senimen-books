@@ -1,7 +1,8 @@
 'use client'
 import { useEffect, useState, useTransition } from 'react'
 import { createClient } from '@/lib/supabase/client'
-import { adminCreateUser, adminCreateEditor, adminCreateManager, adminCreateOrderForUser, adminDeleteUser, adminDeleteOrder } from './actions'
+import { adminCreateUser, adminCreateEditor, adminCreateManager, adminCreateOrderForUser, adminDeleteUser } from './actions'
+import { adminDeleteOrder } from '../orders/actions'
 import { IconX } from '@/components/ui/icons'
 import { innerPhoneDigitsKeyDown } from '@/components/auth'
 import {
@@ -22,9 +23,18 @@ const emptyInviteForm = (): InviteFormState => ({
 const W = '#731616'
 
 const inputStyle: React.CSSProperties = {
-  width: '100%', padding: '11px 14px', borderRadius: 10, border: '1.5px solid #EDE6E6',
-  background: 'white', fontSize: 13, boxSizing: 'border-box', outline: 'none',
-  color: '#1C1010', fontFamily: 'inherit',
+  width: '100%',
+  padding: '11px 14px',
+  borderRadius: 10,
+  borderWidth: '1.5px',
+  borderStyle: 'solid',
+  borderColor: '#EDE6E6',
+  background: 'white',
+  fontSize: 13,
+  boxSizing: 'border-box',
+  outline: 'none',
+  color: '#1C1010',
+  fontFamily: 'inherit',
   transition: 'border-color 200ms cubic-bezier(0.4,0,0.2,1), box-shadow 200ms cubic-bezier(0.4,0,0.2,1)',
 }
 const labelStyle: React.CSSProperties = {
@@ -71,9 +81,20 @@ export default function UsersPage() {
   const [error, setError] = useState<string | null>(null)
   const [isPending, startTransition] = useTransition()
   const [focusField, setFocusField] = useState<string | null>(null)
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null)
+  const [deleteUserConfirm, setDeleteUserConfirm] = useState<{ id: string; name: string } | null>(null)
+  const [deleteOrderConfirm, setDeleteOrderConfirm] = useState<{ id: string; catName: string } | null>(null)
   const supabase = createClient()
 
   useEffect(() => { fetchAll() }, [])
+
+  useEffect(() => {
+    void createClient()
+      .auth.getUser()
+      .then(({ data: { user } }) => {
+        setCurrentUserId(user?.id ?? null)
+      })
+  }, [])
 
   async function fetchAll() {
     setLoading(true)
@@ -192,20 +213,32 @@ export default function UsersPage() {
     })
   }
 
-  async function handleDeleteUser(userId: string, name: string) {
-    if (!confirm(`«${name}» пайдаланушысын өшіру? Бұл әрекетті қайтару мүмкін емес.`)) return
+  async function executeDeleteUser() {
+    if (!deleteUserConfirm) return
+    const { id } = deleteUserConfirm
+    setError(null)
     startTransition(async () => {
-      const res = await adminDeleteUser(userId)
-      if (res.error) { setError(res.error); return }
+      const res = await adminDeleteUser(id)
+      if (res.error) {
+        setError(res.error)
+        return
+      }
+      setDeleteUserConfirm(null)
       fetchAll()
     })
   }
 
-  async function handleDeleteOrder(orderId: string, catName: string) {
-    if (!confirm(`«${catName}» кітабын пайдаланушыдан алып тастау?`)) return
+  async function executeDeleteOrder() {
+    if (!deleteOrderConfirm) return
+    const { id } = deleteOrderConfirm
+    setError(null)
     startTransition(async () => {
-      const res = await adminDeleteOrder(orderId)
-      if (res.error) { setError(res.error); return }
+      const res = await adminDeleteOrder(id)
+      if (res.error) {
+        setError(res.error)
+        return
+      }
+      setDeleteOrderConfirm(null)
       fetchAll()
     })
   }
@@ -471,7 +504,7 @@ export default function UsersPage() {
                             return (
                               <span key={j} style={{ display: 'inline-flex', alignItems: 'center', gap: 4, fontSize: 11, color: W, background: '#F5EDEC', borderRadius: 6, padding: '3px 8px 3px 9px', fontWeight: 600 }}>
                                 {catName}
-                                <button type="button" aria-label="Жою" onClick={() => handleDeleteOrder(o.id, catName)}
+                                <button type="button" aria-label="Жою" onClick={() => { setError(null); setDeleteOrderConfirm({ id: o.id, catName }) }}
                                   style={{ background: 'none', border: 'none', cursor: 'pointer', color: '#C4A8A8', padding: '2px', lineHeight: 1, display: 'inline-flex', alignItems: 'center', justifyContent: 'center', transition: 'color 150ms', touchAction: 'manipulation' }}
                                   onMouseEnter={e => (e.currentTarget.style.color = '#991B1B')}
                                   onMouseLeave={e => (e.currentTarget.style.color = '#C4A8A8')}>
@@ -497,10 +530,38 @@ export default function UsersPage() {
                           </button>
                         )}
                         {u.role !== 'admin' && (
-                          <button onClick={() => handleDeleteUser(u.id, u.full_name || u.phone)}
-                            style={{ fontSize: 11, color: '#DC2626', background: '#FEF2F2', border: 'none', borderRadius: 7, padding: '5px 12px', cursor: 'pointer', fontWeight: 700, whiteSpace: 'nowrap', transition: 'all 150ms' }}
-                            onMouseEnter={e => (e.currentTarget.style.background = '#FEE2E2')}
-                            onMouseLeave={e => (e.currentTarget.style.background = '#FEF2F2')}>
+                          <button
+                            type="button"
+                            disabled={currentUserId !== null && u.id === currentUserId}
+                            title={currentUserId !== null && u.id === currentUserId ? 'Өзіңізді жоюға болмайды' : undefined}
+                            onClick={() => {
+                              setError(null)
+                              setDeleteUserConfirm({
+                                id: u.id,
+                                name: String(u.full_name || u.phone || u.id).trim() || 'Пайдаланушы',
+                              })
+                            }}
+                            style={{
+                              fontSize: 11,
+                              color: '#DC2626',
+                              background: '#FEF2F2',
+                              border: 'none',
+                              borderRadius: 7,
+                              padding: '5px 12px',
+                              cursor: currentUserId !== null && u.id === currentUserId ? 'not-allowed' : 'pointer',
+                              fontWeight: 700,
+                              whiteSpace: 'nowrap',
+                              transition: 'all 150ms',
+                              opacity: currentUserId !== null && u.id === currentUserId ? 0.45 : 1,
+                            }}
+                            onMouseEnter={e => {
+                              if (currentUserId !== null && u.id === currentUserId) return
+                              e.currentTarget.style.background = '#FEE2E2'
+                            }}
+                            onMouseLeave={e => {
+                              e.currentTarget.style.background = '#FEF2F2'
+                            }}
+                          >
                             Өшіру
                           </button>
                         )}
@@ -571,6 +632,154 @@ export default function UsersPage() {
               </button>
             </div>
           </form>
+        </Modal>
+      )}
+
+      {deleteUserConfirm && (
+        <Modal
+          title="Пайдаланушыны жою"
+          onClose={() => {
+            if (!isPending) setDeleteUserConfirm(null)
+          }}
+        >
+          <p style={{ fontSize: 14, color: '#4A3D3D', margin: '0 0 8px', lineHeight: 1.55, fontWeight: 500 }}>
+            <strong style={{ color: '#1C1010' }}>«{deleteUserConfirm.name}»</strong> пайдаланушысын жойғыңыз келетініне сенімдісіз бе?
+          </p>
+          <p style={{ fontSize: 12, color: '#B8A8A8', margin: '0 0 22px', lineHeight: 1.5 }}>
+            Бұл әрекетті қайтару мүмкін емес: профиль, кіру және байланысты деректер жойылады.
+          </p>
+          {error && (
+            <div
+              style={{
+                background: '#FFF5F5',
+                color: '#991B1B',
+                padding: '12px 16px',
+                borderRadius: 10,
+                fontSize: 13,
+                fontWeight: 500,
+                border: '1px solid rgba(153,27,27,0.12)',
+                marginBottom: 16,
+              }}
+            >
+              {error}
+            </div>
+          )}
+          <div style={{ display: 'flex', gap: 10 }}>
+            <button
+              type="button"
+              disabled={isPending}
+              onClick={() => {
+                setError(null)
+                setDeleteUserConfirm(null)
+              }}
+              style={{
+                flex: 1,
+                padding: '11px 0',
+                borderRadius: 10,
+                border: '1.5px solid #EDE6E6',
+                background: 'white',
+                fontSize: 13,
+                cursor: isPending ? 'wait' : 'pointer',
+                color: '#7A6060',
+                fontWeight: 600,
+              }}
+            >
+              Болдырмау
+            </button>
+            <button
+              type="button"
+              disabled={isPending}
+              onClick={() => void executeDeleteUser()}
+              style={{
+                flex: 1,
+                padding: '11px 0',
+                borderRadius: 10,
+                border: 'none',
+                background: '#DC2626',
+                color: 'white',
+                fontSize: 13,
+                fontWeight: 700,
+                cursor: isPending ? 'wait' : 'pointer',
+                opacity: isPending ? 0.75 : 1,
+              }}
+            >
+              {isPending ? 'Жойылуда…' : 'Иә, жою'}
+            </button>
+          </div>
+        </Modal>
+      )}
+
+      {deleteOrderConfirm && (
+        <Modal
+          title="Кітапты жою"
+          onClose={() => {
+            if (!isPending) setDeleteOrderConfirm(null)
+          }}
+        >
+          <p style={{ fontSize: 14, color: '#4A3D3D', margin: '0 0 8px', lineHeight: 1.55, fontWeight: 500 }}>
+            <strong style={{ color: '#1C1010' }}>«{deleteOrderConfirm.catName}»</strong> тапсырысын пайдаланушыдан алып тастағыңыз келетініне сенімдісіз бе?
+          </p>
+          <p style={{ fontSize: 12, color: '#B8A8A8', margin: '0 0 22px', lineHeight: 1.5 }}>
+            Жауаптар мен фотолар қоса жойылуы мүмкін. Әрекетті қайтару қиын.
+          </p>
+          {error && (
+            <div
+              style={{
+                background: '#FFF5F5',
+                color: '#991B1B',
+                padding: '12px 16px',
+                borderRadius: 10,
+                fontSize: 13,
+                fontWeight: 500,
+                border: '1px solid rgba(153,27,27,0.12)',
+                marginBottom: 16,
+              }}
+            >
+              {error}
+            </div>
+          )}
+          <div style={{ display: 'flex', gap: 10 }}>
+            <button
+              type="button"
+              disabled={isPending}
+              onClick={() => {
+                setError(null)
+                setDeleteOrderConfirm(null)
+              }}
+              style={{
+                flex: 1,
+                padding: '11px 0',
+                borderRadius: 10,
+                border: '1.5px solid #EDE6E6',
+                background: 'white',
+                fontSize: 13,
+                cursor: isPending ? 'wait' : 'pointer',
+                color: '#7A6060',
+                fontWeight: 600,
+              }}
+            >
+              Болдырмау
+            </button>
+            <button
+              type="button"
+              disabled={isPending}
+              onClick={() => void executeDeleteOrder()}
+              style={{
+                flex: 1,
+                padding: '11px 0',
+                borderRadius: 10,
+                border: 'none',
+                background: '#DC2626',
+                color: 'white',
+                fontSize: 13,
+                fontWeight: 700,
+                cursor: isPending ? 'wait' : 'pointer',
+                opacity: isPending ? 0.75 : 1,
+              }}
+            >
+              {isPending ? 'Жойылуда…' : 'Иә, жою'}
+            </button>
+          </div>
         </Modal>
       )}
 
