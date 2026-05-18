@@ -46,7 +46,8 @@ export function EditorDashboardSettingsDeck({
             Кітап көрінісінің баптаулары
           </span>
           <p className="mt-0.5 max-w-[55ch] text-[12px] font-medium leading-snug text-[color:var(--text-secondary)]">
-            Мәтін өлшемі · тұрақты тарау беттері{showCoverPanel ? ' · баспа мұқабасы' : ''}
+            Мәтін өлшемі{showCoverPanel ? ' · баспа мұқабасы' : ''}
+            {hasFixedChapterPhrases ? ' · тұрақты тарау беттері' : ''}
           </p>
         </div>
         <span className="shrink-0 text-[11px] font-semibold text-[color:var(--accent)] sm:text-right">
@@ -59,22 +60,22 @@ export function EditorDashboardSettingsDeck({
           <div className="px-3 py-4 sm:px-4">
             <EditorTypographyBar disabled={disabled} embedded />
           </div>
-          {hasFixedChapterPhrases ? (
-            <div className="px-3 py-4 sm:px-4">
-              <FixedChapterBookSettingsPanel
-                uploadFixedChapterPhoto={uploadFixedChapterPhoto}
-                disabled={disabled}
-                trialMode={trialMode}
-                embedded
-              />
-            </div>
-          ) : null}
           {showCoverPanel ? (
             <div className="bg-[color:var(--surface)] px-3 py-4 sm:px-4">
               <ClientCoverPrintPanel
                 order={order}
                 disabled={disabled}
                 uploadAdminCoverPrint={uploadAdminCoverPrint}
+                embedded
+              />
+            </div>
+          ) : null}
+          {hasFixedChapterPhrases ? (
+            <div className="px-3 py-4 sm:px-4">
+              <FixedChapterBookSettingsPanel
+                uploadFixedChapterPhoto={uploadFixedChapterPhoto}
+                disabled={disabled}
+                trialMode={trialMode}
                 embedded
               />
             </div>

@@ -126,7 +126,16 @@ function NewBookPageInner() {
             return
           }
           const { data, error: insErr } = await supabase.from('orders')
-            .insert({ client_id: authedUser.id, category_id: cat.id, author_name: values.author_name.trim(), book_title: values.book_title.trim(), recipient_name: values.recipient_name.trim() || 'Алушы', delivery_address: values.delivery_address.trim(), status: 'filling' })
+            .insert({
+              client_id: authedUser.id,
+              category_id: cat.id,
+              author_name: values.author_name.trim(),
+              book_title: values.book_title.trim(),
+              recipient_name: values.recipient_name.trim() || 'Алушы',
+              delivery_address: values.delivery_address.trim(),
+              status: 'filling',
+              answer_text_align: 'left',
+            })
             .select().single()
           if (insErr) {
             setError(insErr.message)

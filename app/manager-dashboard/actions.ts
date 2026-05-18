@@ -187,6 +187,7 @@ export async function managerGrantBookAccess(data: {
     recipient_name: '',
     delivery_address: '',
     status: 'filling',
+    answer_text_align: 'left',
   })
   if (error) return { error: error.message }
   return { success: true }

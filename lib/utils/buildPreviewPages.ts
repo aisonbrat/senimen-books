@@ -22,7 +22,7 @@ export type BookTypography = BookTypographyInput
 export function normalizeBookTypographyFromOrder(order: PreviewOrderInput): BookTypography {
   const r = (order ?? {}) as Record<string, unknown>
   const fontPreset = normalizeGlobalFontPreset(r.answer_font_preset)
-  const rawAlign = String(r.answer_text_align ?? 'justify').trim().toLowerCase()
+  const rawAlign = String(r.answer_text_align ?? 'left').trim().toLowerCase()
   const textAlign: AnswerTextAlign = rawAlign === 'left' ? 'left' : 'justify'
   return { fontPreset, textAlign }
 }

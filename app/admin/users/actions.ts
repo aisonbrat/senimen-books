@@ -159,6 +159,7 @@ export async function adminCreateOrderForUser(data: {
     delivery_address: '',
     status: 'filling',
     trial_mode: false,
+    answer_text_align: 'left',
   })
 
   if (error) return { error: error.message }
