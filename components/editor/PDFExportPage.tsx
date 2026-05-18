@@ -147,7 +147,7 @@ function PDFOverlay({ text, position, opacity, size, shadowOpacity }: {
       display: 'flex',
       alignItems: pos === 'top' ? 'flex-start' : pos === 'bottom' ? 'flex-end' : 'center',
       justifyContent: 'center',
-      padding: mm(20),
+      padding: `${mm(22)}px ${mm(12)}px`,
     }}>
       <span style={{
         fontFamily: "'Cormorant', Georgia, serif",

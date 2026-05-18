@@ -269,6 +269,19 @@ export function paginateFlowItems(
       usedHmm += lineHmm
       cur.push(item)
     } else if (item.kind === 'paraEnd') {
+      // Keep the last line with its paragraph end so paginated HTML marks `book-flow-line--para-tail`.
+      if (cur.length > 0 && usedHmm + paraGapMm > usable() + 1e-6) {
+        const last = cur[cur.length - 1]
+        if (last?.kind === 'line') {
+          cur.pop()
+          usedHmm -= lineHmm
+          flushPage()
+          cur.push(last)
+          usedHmm = lineHmm
+        } else {
+          flushPage()
+        }
+      }
       ensure(paraGapMm)
       usedHmm += paraGapMm
       cur.push(item)

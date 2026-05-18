@@ -39,13 +39,12 @@ import {
 } from '@/lib/utils/bookPhotoUrl'
 import { normalizeFixedRectangleColor } from '@/lib/utils/fixedChapterRectPalette'
 import { SignedBookPhotoImg } from '@/components/editor/SignedBookPhotoImg'
+import { PHOTO_OVERLAY_VERTICAL_INSET_MM, photoOverlayFlexPaddingMm } from '@/lib/utils/photoOverlayInsets'
 
 const SCALE = 1.6
 const mm = (v: number) => Math.round(v * SCALE)
 /** Avoid rounding drift vs PDF mm anchors (continuation pages vs first slice). */
 const mmPrecise = (v: number) => v * SCALE
-
-const PHOTO_EDGE_INSET_PREVIEW_MM = 12
 
 const PhotoQrPreview = memo(function PhotoQrPreview({
   url,
@@ -72,7 +71,7 @@ const PhotoQrPreview = memo(function PhotoQrPreview({
   const padMm = QR_INTERIOR_PADDING_MM
   const side = mm(sideMm)
   const pad = mm(padMm)
-  const inset = mm(PHOTO_EDGE_INSET_PREVIEW_MM)
+  const inset = mm(PHOTO_OVERLAY_VERTICAL_INSET_MM)
   const innerBox: CSSProperties = {
     position: 'absolute',
     left: '50%',
@@ -1059,6 +1058,7 @@ const Overlay = memo(function Overlay({
   shadowOpacity?: number | null
 }) {
   const { vertical: pos, bg: bgType } = normalizeOverlayComposite(position)
+  const pad = photoOverlayFlexPaddingMm(pos)
   const op = (opacity ?? 60) / 100
   const fontSize = mm((size || 18) * 0.28)
   const shadowStrength = shadowOpacity == null ? 45 : Math.min(100, Math.max(0, shadowOpacity))
@@ -1093,7 +1093,7 @@ const Overlay = memo(function Overlay({
         display: 'flex',
         alignItems: pos === 'top' ? 'flex-start' : pos === 'bottom' ? 'flex-end' : 'center',
         justifyContent: 'center',
-        padding: mm(PHOTO_EDGE_INSET_PREVIEW_MM),
+        padding: `${mm(pad.paddingTopMm)}px ${mm(pad.paddingRightMm)}px ${mm(pad.paddingBottomMm)}px ${mm(pad.paddingLeftMm)}px`,
       }}
     >
       <span

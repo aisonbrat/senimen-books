@@ -11,6 +11,7 @@ const NAV = [
   { label: 'Тегін кезең', href: '/admin/trial', icon: '◇' },
   { label: 'Пайдаланушылар', href: '/admin/users', icon: '◉' },
   { label: 'Үлгілер', href: '/admin/templates', icon: '▦' },
+  { label: 'Пікірлер', href: '/admin/reviews', icon: '◎' },
   { label: 'Профиль', href: '/admin/profile', icon: '○' },
 ]
 

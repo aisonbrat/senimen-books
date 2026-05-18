@@ -9,6 +9,7 @@ import { Tag } from '@/components/ui/Tag'
 import { IconChevronLeft } from '@/components/ui/icons'
 import { answerTextIsEffectivelyEmpty } from '@/lib/utils/answerHtml'
 import { TRIAL_FREE_QUESTION_COUNT } from '@/lib/constants/trialBook'
+import { ExportButton } from '@/components/editor/ExportButton'
 
 interface EditorHeaderProps {
   onSave: () => void
@@ -186,6 +187,7 @@ export function EditorHeader({
               <span className="text-[11px] font-medium tabular-nums text-[color:var(--text-muted)]">
                 {answeredCount}/{allQuestions.length}
               </span>
+              {isEditorMode ? <ExportButton /> : null}
               {actionButtons}
             </div>
           </div>
@@ -211,7 +213,10 @@ export function EditorHeader({
             <span className="text-[11px] font-medium tabular-nums text-[color:var(--text-muted)]">
               {answeredCount}/{allQuestions.length}
             </span>
-            <div className="flex items-center gap-2">{actionButtons}</div>
+            <div className="flex items-center gap-2">
+              {isEditorMode ? <ExportButton /> : null}
+              {actionButtons}
+            </div>
           </div>
         </header>
       )}

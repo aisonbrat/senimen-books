@@ -1,5 +1,7 @@
 'use server'
 
+import { fetchOrderBookProgressMap } from '@/lib/admin/fetchOrderBookProgress'
+import type { OrderProgress } from '@/lib/admin/orderBookProgress'
 import { requireAdminOrManager } from '@/lib/auth/requireStaff'
 import { createValidatedServiceRoleClient } from '@/lib/supabase/serviceRoleClient'
 
@@ -46,4 +48,19 @@ export async function adminDeleteOrder(orderId: string) {
   const { error } = await admin.from('orders').delete().eq('id', orderId)
   if (error) return { error: error.message }
   return { success: true as const }
+}
+
+type OrderProgressInput = { id: string; category_id: string | null | undefined }
+
+/** Server fallback when client-side staff queries are blocked. */
+export async function adminFetchOrderProgressMap(
+  orders: OrderProgressInput[],
+): Promise<{ progress: Record<string, OrderProgress>; error?: string }> {
+  const gate = await requireAdminOrManager()
+  if (!gate.ok) return { progress: {}, error: gate.error }
+
+  const { client: admin, error: keyErr } = makeServiceClient()
+  if (!admin) return { progress: {}, error: keyErr }
+
+  return fetchOrderBookProgressMap(admin, orders)
 }

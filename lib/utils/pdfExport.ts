@@ -43,11 +43,14 @@ import {
 import { candidateStorageObjectPaths, downloadBookPhotoBlob, fetchBookPhotoViaNextRoute, getDisplayableUrl } from '@/lib/storage/bookPhotos'
 import { parseCssHexColor } from '@/lib/utils/colorHex'
 import { normalizeFixedRectangleColor } from '@/lib/utils/fixedChapterRectPalette'
+import {
+  PHOTO_OVERLAY_CENTER_BAND_INSET_MM,
+  PHOTO_OVERLAY_VERTICAL_INSET_MM,
+} from '@/lib/utils/photoOverlayInsets'
 
 const W = 148
 const H = 210
 const MARGIN = BOOK_MARGIN_MM
-const PHOTO_OVERLAY_EDGE_INSET_MM = 12
 
 function withPdfOpacity(pdf: jsPDF, opacity: number, draw: () => void) {
   try {
@@ -113,6 +116,17 @@ async function imageDataFromBlob(blob: Blob): Promise<{ dataUrl: string; w: numb
 /** Last-resort canvas backing-store limit (many engines cap ~16k); avoids tab OOM. No other downscale. */
 const CANVAS_MAX_SIDE_PDF_PHOTO = 16384
 
+export type PdfClientPhotoMode = 'png' | 'jpeg'
+
+export const PDF_EXPORT_PNG_LABEL = 'Баспаханалық нұсқа (PNG Perfect - High Size)'
+export const PDF_EXPORT_JPEG_LABEL = 'Жеңілдетілген нұсқа (JPEG 99 - Compressed)'
+
+const JPEG_EXPORT_QUALITY = 0.99
+
+let activeClientPhotoMode: PdfClientPhotoMode = 'png'
+
+type CroppedPageImage = { dataUrl: string; format: 'PNG' | 'JPEG' }
+
 /**
  * Center-crop to the book page aspect, then copy pixels at **native crop resolution** (1:1 with decoded bitmap).
  * - No `devicePixelRatio`: `canvas.width` / `canvas.height` are backing-store pixels, not CSS logical pixels.
@@ -125,7 +139,7 @@ async function cropToCanvas(
   imgH: number,
   targetWmm: number,
   targetHmm: number,
-): Promise<string> {
+): Promise<CroppedPageImage> {
   const ratio = imgW / imgH
   const boxRatio = targetWmm / targetHmm
   let sx = 0,
@@ -140,7 +154,6 @@ async function cropToCanvas(
     sy = (imgH - sh) / 2
   }
 
-  // Integer source rect = pixel grid alignment (avoids sub-pixel blur from the compositor).
   sx = Math.max(0, Math.floor(sx))
   sy = Math.max(0, Math.floor(sy))
   sw = Math.min(imgW - sx, Math.max(1, Math.ceil(sw)))
@@ -163,17 +176,25 @@ async function cropToCanvas(
   })
 
   const canvas = document.createElement('canvas')
-  // Backing-store size in bitmap pixels only — never multiply/divide by `window.devicePixelRatio`.
   canvas.width = cw
   canvas.height = ch
-  const ctx = canvas.getContext('2d')!
-  if (!ctx) return dataUrl
+  const ctx = canvas.getContext('2d')
+  if (!ctx) {
+    return activeClientPhotoMode === 'jpeg'
+      ? { dataUrl, format: 'JPEG' }
+      : { dataUrl, format: 'PNG' }
+  }
 
   ctx.imageSmoothingEnabled = false
   ctx.imageSmoothingQuality = 'high'
-
   ctx.drawImage(img, sx, sy, sw, sh, 0, 0, canvas.width, canvas.height)
-  return canvas.toDataURL('image/png')
+  if (activeClientPhotoMode === 'jpeg') {
+    return {
+      dataUrl: canvas.toDataURL('image/jpeg', JPEG_EXPORT_QUALITY),
+      format: 'JPEG',
+    }
+  }
+  return { dataUrl: canvas.toDataURL('image/png'), format: 'PNG' }
 }
 
 async function drawPhoto(
@@ -190,6 +211,7 @@ async function drawPhoto(
     pdf.rect(x, y, w, h, 'F')
     return
   }
+
   let result: { dataUrl: string; w: number; h: number } | null = null
   if (supabase) {
     // Prefer Storage `.download()` / same-origin proxy (original bytes). Avoid HTTP URL first — it may be
@@ -221,7 +243,7 @@ async function drawPhoto(
   }
   try {
     const cropped = await cropToCanvas(result.dataUrl, result.w, result.h, w, h)
-    pdf.addImage(cropped, 'PNG', x, y, w, h, undefined, 'SLOW')
+    pdf.addImage(cropped.dataUrl, cropped.format, x, y, w, h, undefined, 'SLOW')
   } catch {
     pdf.setFillColor(238, 238, 238)
     pdf.rect(x, y, w, h, 'F')
@@ -276,6 +298,24 @@ async function drawLogoTopCenter(pdf: jsPDF, topMm: number, maxHmm: number) {
 }
 
 /** Height consumed in mm */
+function measureWrappedTextBlockHmm(pdf: jsPDF, text: string, maxW: number, fontSizeMm: number, lineHeightMm?: number): number {
+  const lineH = lineHeightMm ?? fontSizeMm * 1.45
+  pdf.setFont('Cormorant', 'normal')
+  pdf.setFontSize(fontSizeMm * 2.8346)
+  const paragraphs = text.split('\n\n')
+  let total = 0
+  paragraphs.forEach((para, pIdx) => {
+    const clean = para.replace(/\n/g, ' ').trim()
+    if (!clean) {
+      total += lineH
+      return
+    }
+    const lines: string[] = pdf.splitTextToSize(clean, maxW)
+    total += lines.length * lineH + (pIdx < paragraphs.length - 1 ? fontSizeMm * 0.8 : 0)
+  })
+  return total
+}
+
 function drawVectorText(
   pdf: jsPDF,
   text: string,
@@ -711,49 +751,69 @@ async function drawPhotoCustomPage(
       pdf.setFillColor(0, 0, 0)
       withPdfOpacity(pdf, op, () => pdf.rect(0, 0, W, H, 'F'))
     } else if (bgType === 'gradient') {
-      const gradCanvas = document.createElement('canvas')
-      gradCanvas.width = 10
-      gradCanvas.height = Math.round(overlayH * 11.811)
-      const gCtx = gradCanvas.getContext('2d')!
-      let y0 = 0
-      let y1 = gradCanvas.height
-      if (pos === 'bottom') {
-        y0 = gradCanvas.height
-        y1 = 0
-      } else if (pos === 'center') {
-        y0 = 0
-        y1 = gradCanvas.height
+      const gradHeightPx = Math.round(overlayH * 11.811)
+      let gradDataUrl: string | null = null
+      if (typeof document !== 'undefined') {
+        const gradCanvas = document.createElement('canvas')
+        gradCanvas.width = 10
+        gradCanvas.height = gradHeightPx
+        const gCtx = gradCanvas.getContext('2d')!
+        let y0 = 0
+        let y1 = gradCanvas.height
+        if (pos === 'bottom') {
+          y0 = gradCanvas.height
+          y1 = 0
+        } else if (pos === 'center') {
+          y0 = 0
+          y1 = gradCanvas.height
+        }
+        const grad = gCtx.createLinearGradient(0, y0, 0, y1)
+        if (pos === 'center') {
+          grad.addColorStop(0, 'rgba(0,0,0,0)')
+          grad.addColorStop(0.5, `rgba(0,0,0,${op})`)
+          grad.addColorStop(1, 'rgba(0,0,0,0)')
+        } else {
+          grad.addColorStop(0, `rgba(0,0,0,${op})`)
+          grad.addColorStop(1, 'rgba(0,0,0,0)')
+        }
+        gCtx.fillStyle = grad
+        gCtx.fillRect(0, 0, gradCanvas.width, gradCanvas.height)
+        gradDataUrl = gradCanvas.toDataURL('image/png')
       }
-      const grad = gCtx.createLinearGradient(0, y0, 0, y1)
-      if (pos === 'center') {
-        grad.addColorStop(0, 'rgba(0,0,0,0)')
-        grad.addColorStop(0.5, `rgba(0,0,0,${op})`)
-        grad.addColorStop(1, 'rgba(0,0,0,0)')
-      } else {
-        grad.addColorStop(0, `rgba(0,0,0,${op})`)
-        grad.addColorStop(1, 'rgba(0,0,0,0)')
+      if (gradDataUrl) {
+        pdf.addImage(gradDataUrl, 'PNG', 0, overlayY, W, overlayH, undefined, 'FAST')
       }
-      gCtx.fillStyle = grad
-      gCtx.fillRect(0, 0, gradCanvas.width, gradCanvas.height)
-      pdf.addImage(gradCanvas.toDataURL('image/png'), 'PNG', 0, overlayY, W, overlayH, undefined, 'FAST')
     }
 
     const fontSizeMm = parseInt(customPage.text_content || '18', 10) * 0.352778
-    const textBlockH = fontSizeMm * 1.5
-    const padding = PHOTO_OVERLAY_EDGE_INSET_MM
+    const textMaxW = W - MARGIN * 2
+    const lineHeightMm = fontSizeMm * 1.3
+    const textBlockHmm = measureWrappedTextBlockHmm(pdf, customPage.overlay_text, textMaxW, fontSizeMm, lineHeightMm)
+    const vertInset =
+      pos === 'top'
+        ? PHOTO_OVERLAY_VERTICAL_INSET_MM
+        : pos === 'bottom'
+          ? PHOTO_OVERLAY_VERTICAL_INSET_MM
+          : PHOTO_OVERLAY_CENTER_BAND_INSET_MM
     const textY =
-      pos === 'top' ? overlayY + padding : pos === 'bottom' ? overlayY + overlayH - textBlockH - padding : H / 2 - textBlockH / 2
+      pos === 'top'
+        ? overlayY + vertInset
+        : pos === 'bottom'
+          ? overlayY + overlayH - textBlockHmm - vertInset
+          : overlayY + (overlayH - textBlockHmm) / 2
     const shadowStrength = resolveOverlayShadowOpacity(customPage)
     if (shadowStrength > 0) {
       const dim = Math.round(40 + shadowStrength * 0.15)
-      drawVectorText(pdf, customPage.overlay_text, MARGIN + 0.35, textY + 0.35, W - MARGIN * 2, fontSizeMm, {
+      drawVectorText(pdf, customPage.overlay_text, MARGIN + 0.35, textY + 0.35, textMaxW, fontSizeMm, {
         color: [dim, dim, dim],
         align: 'center',
+        lineHeightMm,
       })
     }
-    drawVectorText(pdf, customPage.overlay_text, MARGIN, textY, W - MARGIN * 2, fontSizeMm, {
+    drawVectorText(pdf, customPage.overlay_text, MARGIN, textY, textMaxW, fontSizeMm, {
       color: [255, 255, 255],
       align: 'center',
+      lineHeightMm,
     })
   }
 
@@ -769,7 +829,7 @@ async function drawPhotoCustomPage(
       const pad = QR_INTERIOR_PADDING_MM
       const inner = Math.max(6, qrMm - 2 * pad)
       const qPos = (customPage?.qr_vertical || 'bottom') as 'top' | 'center' | 'bottom'
-      const inset = PHOTO_OVERLAY_EDGE_INSET_MM
+      const inset = PHOTO_OVERLAY_VERTICAL_INSET_MM
       const qx = (W - qrMm) / 2
       let qy = inset
       if (qPos === 'center') qy = (H - qrMm) / 2
@@ -912,12 +972,13 @@ export async function exportBookToPDF(
   customPages: CustomPage[],
   onProgress?: (current: number, total: number) => void,
   typographyOverride?: BookTypography | null,
-  chapterFixedPhotos?: Record<string, string>
+  chapterFixedPhotos?: Record<string, string>,
+  photoMode: PdfClientPhotoMode = 'png',
 ): Promise<void> {
   logoRasterCache = null
+  activeClientPhotoMode = photoMode
 
-  const supabase: SupabaseClient | null =
-    typeof window !== 'undefined' ? createClient() : null
+  const supabase: SupabaseClient | null = typeof window !== 'undefined' ? createClient() : null
 
   const typo = typographyOverride ?? normalizeBookTypographyFromOrder(order)
 
@@ -942,7 +1003,12 @@ export async function exportBookToPDF(
     order
   )
 
-  const pdf = new jsPDF({ orientation: 'portrait', unit: 'mm', format: [W, H], compress: false })
+  const pdf = new jsPDF({
+    orientation: 'portrait',
+    unit: 'mm',
+    format: [W, H],
+    compress: false,
+  })
   registerFonts(pdf)
 
   const bookTitle = order.book_title || ''

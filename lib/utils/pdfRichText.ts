@@ -131,9 +131,10 @@ export function drawSerializedRichHtml(
     }
 
     const lineY = y + fontMm * 0.75
-    const tailFromHtml = (op.el as Element).classList?.contains('book-flow-line--para-tail')
+    const elClass = (op.el as Element).getAttribute('class') ?? ''
+    const tailFromHtml = elClass.includes('book-flow-line--para-tail')
     const paraClosing = isParagraphClosingLine[lineOpIdx] || tailFromHtml
-    /** Middle lines of a paragraph must justify; last line (`paraClosing`) stays flush-left like CSS `text-align-last: left`. */
+    /** Middle lines justify; only the paragraph’s last line stays flush-left (`text-align-last: left`). */
     const mayJustify = align === 'justify' && !paraClosing && pieces.length > 1
 
     const drawPiecesLeft = (startX: number) => {

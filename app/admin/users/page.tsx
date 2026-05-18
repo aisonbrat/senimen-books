@@ -1,7 +1,14 @@
 'use client'
 import { useEffect, useState, useTransition } from 'react'
 import { createClient } from '@/lib/supabase/client'
-import { adminCreateUser, adminCreateEditor, adminCreateManager, adminCreateOrderForUser, adminDeleteUser } from './actions'
+import {
+  adminCreateUser,
+  adminCreateEditor,
+  adminCreateManager,
+  adminCreateOrderForUser,
+  adminDeleteUser,
+  adminUpdateUserPassword,
+} from './actions'
 import { adminDeleteOrder } from '../orders/actions'
 import { IconX } from '@/components/ui/icons'
 import { innerPhoneDigitsKeyDown } from '@/components/auth'
@@ -84,6 +91,8 @@ export default function UsersPage() {
   const [currentUserId, setCurrentUserId] = useState<string | null>(null)
   const [deleteUserConfirm, setDeleteUserConfirm] = useState<{ id: string; name: string } | null>(null)
   const [deleteOrderConfirm, setDeleteOrderConfirm] = useState<{ id: string; catName: string } | null>(null)
+  const [passwordUser, setPasswordUser] = useState<{ id: string; name: string } | null>(null)
+  const [passwordForm, setPasswordForm] = useState({ password: '', confirm: '' })
   const supabase = createClient()
 
   useEffect(() => { fetchAll() }, [])
@@ -210,6 +219,29 @@ export default function UsersPage() {
       setShowCreateManager(false)
       setManagerForm(emptyInviteForm())
       fetchAll()
+    })
+  }
+
+  function handlePasswordSubmit(e: React.FormEvent) {
+    e.preventDefault()
+    if (!passwordUser) return
+    if (passwordForm.password.length < PW_MIN_ADMIN) {
+      setError(`Құпия сөз кем дегенде ${PW_MIN_ADMIN} таңба болуы тиіс`)
+      return
+    }
+    if (passwordForm.password !== passwordForm.confirm) {
+      setError('Құпия сөздер сәйкес келмейді')
+      return
+    }
+    startTransition(async () => {
+      const res = await adminUpdateUserPassword(passwordUser.id, passwordForm.password)
+      if (res.error) {
+        setError(res.error)
+        return
+      }
+      setPasswordUser(null)
+      setPasswordForm({ password: '', confirm: '' })
+      setError(null)
     })
   }
 
@@ -529,6 +561,33 @@ export default function UsersPage() {
                             Қолжеткізу беру
                           </button>
                         )}
+                        <button
+                          type="button"
+                          onClick={() => {
+                            setError(null)
+                            setPasswordUser({
+                              id: u.id,
+                              name: String(u.full_name || u.phone || u.id).trim() || 'Пайдаланушы',
+                            })
+                            setPasswordForm({ password: '', confirm: '' })
+                          }}
+                          style={{
+                            fontSize: 11,
+                            color: W,
+                            background: '#F5EDEC',
+                            border: 'none',
+                            borderRadius: 7,
+                            padding: '5px 12px',
+                            cursor: 'pointer',
+                            fontWeight: 700,
+                            whiteSpace: 'nowrap',
+                            transition: 'all 150ms',
+                          }}
+                          onMouseEnter={e => (e.currentTarget.style.background = '#EDE3E3')}
+                          onMouseLeave={e => (e.currentTarget.style.background = '#F5EDEC')}
+                        >
+                          Парольді өзгерту
+                        </button>
                         {u.role !== 'admin' && (
                           <button
                             type="button"
@@ -629,6 +688,80 @@ export default function UsersPage() {
               <button type="submit" disabled={isPending}
                 style={{ flex: 2, padding: '11px 0', borderRadius: 10, border: 'none', background: '#0EA5A4', color: 'white', fontSize: 13, fontWeight: 700, cursor: 'pointer', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.1), 0 4px 16px rgba(14,165,164,0.32)', opacity: isPending ? 0.75 : 1 }}>
                 {isPending ? 'Қосылуда...' : 'Менеджер қосу'}
+              </button>
+            </div>
+          </form>
+        </Modal>
+      )}
+
+      {passwordUser && (
+        <Modal
+          title="Парольді өзгерту"
+          onClose={() => {
+            if (!isPending) {
+              setPasswordUser(null)
+              setPasswordForm({ password: '', confirm: '' })
+              setError(null)
+            }
+          }}
+        >
+          <form onSubmit={handlePasswordSubmit} style={{ display: 'flex', flexDirection: 'column', gap: 18 }}>
+            <p style={{ fontSize: 13, color: '#4A3D3D', margin: 0, lineHeight: 1.55 }}>
+              <strong style={{ color: '#1C1010' }}>{passwordUser.name}</strong> үшін жаңа құпия сөзді орнатыңыз.
+              Ескі құпия сөз қажет емес.
+            </p>
+            <div>
+              <label style={labelStyle}>Жаңа құпия сөз</label>
+              <input
+                type="password"
+                autoComplete="new-password"
+                required
+                minLength={PW_MIN_ADMIN}
+                value={passwordForm.password}
+                onChange={(e) => setPasswordForm((f) => ({ ...f, password: e.target.value }))}
+                onFocus={() => setFocusField('pw-new')}
+                onBlur={() => setFocusField(null)}
+                style={{ ...inputStyle, ...focusStyleFor('pw-new') }}
+              />
+            </div>
+            <div>
+              <label style={labelStyle}>Қайталау</label>
+              <input
+                type="password"
+                autoComplete="new-password"
+                required
+                minLength={PW_MIN_ADMIN}
+                value={passwordForm.confirm}
+                onChange={(e) => setPasswordForm((f) => ({ ...f, confirm: e.target.value }))}
+                onFocus={() => setFocusField('pw-confirm')}
+                onBlur={() => setFocusField(null)}
+                style={{ ...inputStyle, ...focusStyleFor('pw-confirm') }}
+              />
+            </div>
+            {error && (
+              <div style={{ background: '#FFF5F5', color: '#991B1B', padding: '12px 16px', borderRadius: 10, fontSize: 13, fontWeight: 500, border: '1px solid rgba(153,27,27,0.12)' }}>
+                {error}
+              </div>
+            )}
+            <div style={{ display: 'flex', gap: 10, marginTop: 4 }}>
+              <button
+                type="button"
+                disabled={isPending}
+                onClick={() => {
+                  setPasswordUser(null)
+                  setPasswordForm({ password: '', confirm: '' })
+                  setError(null)
+                }}
+                style={{ flex: 1, padding: '11px 0', borderRadius: 10, border: '1.5px solid #EDE6E6', background: 'white', fontSize: 13, cursor: isPending ? 'wait' : 'pointer', color: '#7A6060', fontWeight: 600 }}
+              >
+                Болдырмау
+              </button>
+              <button
+                type="submit"
+                disabled={isPending}
+                style={{ flex: 2, padding: '11px 0', borderRadius: 10, border: 'none', background: W, color: 'white', fontSize: 13, fontWeight: 700, cursor: isPending ? 'wait' : 'pointer', opacity: isPending ? 0.75 : 1 }}
+              >
+                {isPending ? 'Сақталуда…' : 'Сақтау'}
               </button>
             </div>
           </form>

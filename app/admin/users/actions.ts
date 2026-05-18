@@ -202,6 +202,28 @@ export async function adminGrantFullBookAccess(orderId: string) {
   return { success: true }
 }
 
+const PW_MIN_ADMIN = 8
+
+export async function adminUpdateUserPassword(userId: string, newPassword: string) {
+  const gate = await requireAdminOrManager()
+  if (!gate.ok) return { error: gate.error }
+
+  const trimmedId = userId?.trim()
+  if (!trimmedId) return { error: 'Пайдаланушы көрсетілмеді' }
+
+  const password = newPassword ?? ''
+  if (password.length < PW_MIN_ADMIN) {
+    return { error: `Жаңа құпия сөз кем дегенде ${PW_MIN_ADMIN} таңба болуы тиіс` }
+  }
+
+  const { client: admin, error: keyErr } = makeServiceClient()
+  if (!admin) return { error: keyErr }
+
+  const { error } = await admin.auth.admin.updateUserById(trimmedId, { password })
+  if (error) return { error: error.message }
+  return { success: true as const }
+}
+
 export async function adminDeleteUser(userId: string) {
   const gate = await requireAdminOrManager()
   if (!gate.ok) return { error: gate.error }

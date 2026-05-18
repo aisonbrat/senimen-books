@@ -4,9 +4,27 @@ import { useCallback, useEffect, useMemo, useRef, useState, useTransition } from
 import { clsx } from 'clsx'
 import { createClient } from '@/lib/supabase/client'
 import { downloadBookPhotoBlob, getDisplayableUrl } from '@/lib/storage/bookPhotos'
-import { exportBookToPDF, type ExportOrderInput } from '@/lib/utils/pdfExport'
+import { runClientBookPdfExport } from '@/lib/client/runClientBookPdfExport'
+import { normalizeBookTypographyFromOrder } from '@/lib/utils/buildPreviewPages'
+import {
+  PDF_EXPORT_JPEG_LABEL,
+  PDF_EXPORT_PNG_LABEL,
+  type ExportOrderInput,
+  type PdfClientPhotoMode,
+} from '@/lib/utils/pdfExport'
 import { formatPhoneForDisplay } from '@/lib/utils/phone'
-import { adminDeleteOrder, adminSetOrderClientAiEnabled, adminUpdateOrderStatus } from './actions'
+import {
+  formatOrderProgressLabel,
+  formatOrderProgressPercent,
+  type OrderProgress,
+} from '@/lib/admin/orderBookProgress'
+import { fetchOrderBookProgressMap } from '@/lib/admin/fetchOrderBookProgress'
+import {
+  adminDeleteOrder,
+  adminFetchOrderProgressMap,
+  adminSetOrderClientAiEnabled,
+  adminUpdateOrderStatus,
+} from './actions'
 import { Button } from '@/components/ui/Button'
 import {
   ORDER_STATUS_ORDER,
@@ -168,6 +186,22 @@ type AdminOrderListRow = {
   hat_text?: string | null
 }
 
+function OrderProgressDisplay({ progress }: { progress?: OrderProgress }) {
+  if (!progress || progress.total <= 0) {
+    return <span className="text-[11px] font-medium text-[color:var(--text-muted)]">—</span>
+  }
+  return (
+    <div className="flex flex-col gap-0.5">
+      <span className="text-[12px] font-semibold tabular-nums text-[color:var(--text-primary)]">
+        {formatOrderProgressLabel(progress)}
+      </span>
+      <span className="text-[10px] font-medium tabular-nums text-[color:var(--text-muted)]">
+        {formatOrderProgressPercent(progress)}
+      </span>
+    </div>
+  )
+}
+
 const selectCls = clsx(
   'rounded-[var(--radius-md)] border border-[color:var(--border)] bg-[color:var(--surface)]',
   'px-2 py-1.5 text-[12px] text-[color:var(--text-primary)] shadow-[var(--shadow-xs)] outline-none',
@@ -178,8 +212,11 @@ const selectCls = clsx(
 function PDFButton({ order }: { order: AdminOrderListRow }) {
   const [exporting, setExporting] = useState(false)
   const [progress, setProgress] = useState({ current: 0, total: 0 })
-  async function handleExport() {
+
+  async function handleExport(photoMode: PdfClientPhotoMode) {
+    if (exporting) return
     setExporting(true)
+    setProgress({ current: 0, total: 0 })
     try {
       const { answers, chapters, customPages, chapterFixedPhotos, pdf_colophon_template_kk } = await fetchOrderData(
         order.id,
@@ -205,24 +242,54 @@ function PDFButton({ order }: { order: AdminOrderListRow }) {
         hat_font_preset: order.hat_font_preset,
         fixed_rectangle_color: order.fixed_rectangle_color,
       }
-      await exportBookToPDF(
-        pdfOrder,
+
+      await runClientBookPdfExport({
+        order: pdfOrder,
         chapters,
         answers,
         customPages,
-        (c, t) => setProgress({ current: c, total: t }),
-        null,
-        chapterFixedPhotos
-      )
+        chapterFixedPhotos,
+        typography: normalizeBookTypographyFromOrder(pdfOrder),
+        photoMode,
+        onProgress: (c, t) => setProgress({ current: c, total: t }),
+      })
+    } catch (error) {
+      // eslint-disable-next-line no-console
+      console.error('[PDF Export]', error)
+      const message = error instanceof Error ? error.message : 'PDF export failed'
+      window.alert(message)
     } finally {
       setExporting(false)
       setProgress({ current: 0, total: 0 })
     }
   }
+
+  const progressLabel =
+    exporting && progress.total > 0 ? `${progress.current}/${progress.total}` : exporting ? '…' : null
+
   return (
-    <Button type="button" variant="secondary" size="sm" onClick={handleExport} disabled={exporting}>
-      {exporting ? (progress.total > 0 ? `${progress.current}/${progress.total}` : '…') : 'PDF'}
-    </Button>
+    <div className="flex flex-col gap-1">
+      <Button
+        type="button"
+        variant="secondary"
+        size="sm"
+        title={PDF_EXPORT_PNG_LABEL}
+        onClick={() => void handleExport('png')}
+        disabled={exporting}
+      >
+        {progressLabel ?? 'PDF PNG'}
+      </Button>
+      <Button
+        type="button"
+        variant="secondary"
+        size="sm"
+        title={PDF_EXPORT_JPEG_LABEL}
+        onClick={() => void handleExport('jpeg')}
+        disabled={exporting}
+      >
+        {exporting ? progressLabel : 'PDF JPEG'}
+      </Button>
+    </div>
   )
 }
 
@@ -287,6 +354,7 @@ export default function OrdersPage() {
   const [isDeletePending, startDeleteTransition] = useTransition()
   const [totalMatching, setTotalMatching] = useState<number | null>(null)
   const [statusCounts, setStatusCounts] = useState<Record<string, number>>({ all: 0 })
+  const [progressByOrderId, setProgressByOrderId] = useState<Record<string, OrderProgress>>({})
 
   const ordersRef = useRef(orders)
   useEffect(() => {
@@ -374,6 +442,7 @@ export default function OrdersPage() {
         setRefreshing(true)
       } else {
         setOrders([])
+        setProgressByOrderId({})
         setTotalMatching(null)
         setLoading(true)
       }
@@ -449,6 +518,21 @@ export default function OrdersPage() {
         }
 
         await mergeProfilesForRows(supabase, rows, append)
+
+        const progressInput = rows.map((o) => ({ id: o.id, category_id: o.category_id }))
+        let progressRes = await fetchOrderBookProgressMap(supabase, progressInput)
+        if (progressRes.error) {
+          progressRes = await adminFetchOrderProgressMap(progressInput)
+        }
+        if (progressRes.error) {
+          console.warn('[admin/orders] progress:', progressRes.error)
+          setMutationError((prev) => prev ?? `Прогресс жүктелмеді: ${progressRes.error}`)
+        }
+        if (append) {
+          setProgressByOrderId((prev) => ({ ...prev, ...progressRes.progress }))
+        } else {
+          setProgressByOrderId(progressRes.progress)
+        }
       } catch (e) {
         setLoadError(e instanceof Error ? e.message : 'Жүктеу қатесі')
         if (!append) {
@@ -782,6 +866,10 @@ export default function OrdersPage() {
                     <dd className="tabular-nums text-[color:var(--text-muted)]">
                       {new Date(order.created_at).toLocaleDateString('ru-RU')}
                     </dd>
+                    <dt className="text-[color:var(--text-muted)]">Прогресс</dt>
+                    <dd>
+                      <OrderProgressDisplay progress={progressByOrderId[order.id]} />
+                    </dd>
                   </dl>
                   <div className="mt-3.5 flex flex-col gap-2 border-t border-[color:var(--border)] pt-3">
                     <label className="flex cursor-pointer items-center gap-2 text-[12px] font-semibold text-[color:var(--text-secondary)]">
@@ -836,7 +924,7 @@ export default function OrdersPage() {
               <table className="w-full min-w-[1240px] border-collapse">
                 <thead>
                   <tr className="border-b border-[color:var(--border)] bg-[color:var(--surface-subtle)]">
-                    {['Кітап', 'Түрі', 'Нұсқа', 'Автор', 'Алушы', 'Телефон', 'Мекенжай', 'Редактор', 'Күні', 'Статус', 'Өзгерту', 'AI', 'PDF · Мұқаба', 'Жою'].map((h) => (
+                    {['Кітап', 'Түрі', 'Нұсқа', 'Прогресс', 'Автор', 'Алушы', 'Телефон', 'Мекенжай', 'Редактор', 'Күні', 'Статус', 'Өзгерту', 'AI', 'PDF · Мұқаба', 'Жою'].map((h) => (
                       <th
                         key={h}
                         className="whitespace-nowrap px-4 py-3 text-left text-[10px] font-bold uppercase tracking-[0.06em] text-[color:var(--text-muted)]"
@@ -878,6 +966,9 @@ export default function OrdersPage() {
                         ) : (
                           <span className="text-[11px] font-medium text-[color:var(--text-muted)]">Толық</span>
                         )}
+                      </td>
+                      <td className="px-4 py-3">
+                        <OrderProgressDisplay progress={progressByOrderId[order.id]} />
                       </td>
                       <td className="px-4 py-3 text-[13px] text-[color:var(--text-secondary)]">{order.author_name}</td>
                       <td className="px-4 py-3 text-[13px] text-[color:var(--text-secondary)]">{order.recipient_name}</td>

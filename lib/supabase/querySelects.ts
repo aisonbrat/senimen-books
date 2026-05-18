@@ -37,6 +37,17 @@ export const ORDERS_EDITOR_SELECT = [
 
 export const ANSWERS_TEXT_ONLY_SELECT = 'question_id,text_content'
 
+/** Admin order progress — count filled answers per book. */
+export const ANSWERS_PROGRESS_SELECT = 'order_id,question_id,text_content,photo_path,is_skipped'
+
+/** Server/client PDF export — photo answers may live in `photo_path` when `text_content` is empty. */
+export const ANSWERS_PDF_EXPORT_SELECT = [
+  'question_id',
+  'text_content',
+  'photo_path',
+  'is_skipped',
+].join(',')
+
 /** Full custom page row shape used by editor cards, preview, and PDF. */
 export const CUSTOM_PAGES_EDITOR_SELECT = [
   'id',

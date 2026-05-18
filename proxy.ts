@@ -46,6 +46,7 @@ export async function proxy(request: NextRequest) {
       path.startsWith('/design-preview') ||
       path.startsWith('/privacy') ||
       path.startsWith('/landing') ||
+      path.startsWith('/feedback') ||
       path === '/' ||
       path.startsWith('/api/public/')
     if (guestAllowed) return response
