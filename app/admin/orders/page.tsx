@@ -23,7 +23,21 @@ import { fetchOrderChapterFixedPhotos } from '@/lib/supabase/orderChapterFixedPh
 import { parseEditorSkippedChapterIds } from '@/lib/utils/editorSkippedChapters'
 import { normalizeCoverTitleFontPreset } from '@/lib/bookLayout'
 import { recoverFixedChapterPhotosFromStorage } from '@/lib/storage/recoverFixedChapterPhotos'
+import { getOrderAssignedEditorId } from '@/lib/utils/editorOrderAccess'
 import {
+  defaultVisibleColumnSet,
+  isAdminOrdersColumnVisible,
+  loadTableCompactFromStorage,
+  loadVisibleColumnsFromStorage,
+  saveTableCompactToStorage,
+  saveVisibleColumnsToStorage,
+  visibleColumnsInOrder,
+  type AdminOrdersColumnId,
+} from '@/lib/admin/adminOrdersTablePrefs'
+import { AdminOrdersTableControls } from '@/components/admin/AdminOrdersTableControls'
+import { AdminOrderTableCell } from '@/components/admin/AdminOrderTableRow'
+import {
+  adminAssignOrderEditor,
   adminDeleteOrder,
   adminFetchOrderProgressMap,
   adminSetOrderClientAiEnabled,
@@ -396,6 +410,8 @@ export default function OrdersPage() {
   const [orders, setOrders] = useState<AdminOrderListRow[]>([])
   const [categories, setCategories] = useState<Record<string, string>>({})
   const [editors, setEditors] = useState<Record<string, string>>({})
+  const [editorRoster, setEditorRoster] = useState<Array<{ id: string; full_name: string }>>([])
+  const [editorAssigningId, setEditorAssigningId] = useState<string | null>(null)
   const [clientPhones, setClientPhones] = useState<Record<string, string>>({})
   const [loading, setLoading] = useState(true)
   const [loadingMore, setLoadingMore] = useState(false)
@@ -415,6 +431,34 @@ export default function OrdersPage() {
   const [totalMatching, setTotalMatching] = useState<number | null>(null)
   const [statusCounts, setStatusCounts] = useState<Record<string, number>>({ all: 0 })
   const [progressByOrderId, setProgressByOrderId] = useState<Record<string, OrderProgress>>({})
+  const [visibleColumns, setVisibleColumns] = useState<Set<AdminOrdersColumnId>>(() => defaultVisibleColumnSet())
+  const [tableCompact, setTableCompact] = useState(false)
+
+  useEffect(() => {
+    setVisibleColumns(loadVisibleColumnsFromStorage())
+    setTableCompact(loadTableCompactFromStorage())
+  }, [])
+
+  const persistVisibleColumns = useCallback((next: Set<AdminOrdersColumnId>) => {
+    setVisibleColumns(next)
+    saveVisibleColumnsToStorage(next)
+  }, [])
+
+  const persistTableCompact = useCallback((compact: boolean) => {
+    setTableCompact(compact)
+    saveTableCompactToStorage(compact)
+  }, [])
+
+  const visibleColumnList = useMemo(() => visibleColumnsInOrder(visibleColumns), [visibleColumns])
+  const tableCellPad = tableCompact ? 'px-3 py-2' : 'px-4 py-3'
+  const showCol = useCallback(
+    (id: AdminOrdersColumnId) => isAdminOrdersColumnVisible(visibleColumns, id),
+    [visibleColumns],
+  )
+  const stickyBookCls =
+    'sticky left-0 z-[2] bg-[color:var(--surface)] shadow-[4px_0_8px_-2px_rgba(15,23,42,0.08)] group-hover:bg-[color:var(--surface-subtle)]/60 after:pointer-events-none after:absolute after:inset-y-0 after:right-0 after:w-px after:bg-[color:var(--border)]'
+  const stickyBookHeadCls = clsx(stickyBookCls, 'z-[3] !bg-[color:var(--surface-subtle)] group-hover:!bg-[color:var(--surface-subtle)]')
+  const tableMinWidth = Math.max(560, visibleColumnList.length * (tableCompact ? 72 : 88))
 
   const ordersRef = useRef(orders)
   useEffect(() => {
@@ -425,6 +469,28 @@ export default function OrdersPage() {
     const t = setTimeout(() => setDebouncedSearch(searchInput.trim()), 350)
     return () => clearTimeout(t)
   }, [searchInput])
+
+  useEffect(() => {
+    let cancelled = false
+    void (async () => {
+      const supabase = createClient()
+      const { data, error } = await supabase
+        .from('profiles')
+        .select('id, full_name')
+        .eq('role', 'editor')
+        .order('full_name')
+      if (cancelled || error) return
+      setEditorRoster(
+        (data || []).map((p: { id: string; full_name: string | null }) => ({
+          id: p.id,
+          full_name: (p.full_name || '').trim() || 'Редактор',
+        })),
+      )
+    })()
+    return () => {
+      cancelled = true
+    }
+  }, [])
 
   const fetchStatusCounts = useCallback(async () => {
     const supabase = createClient()
@@ -451,7 +517,7 @@ export default function OrdersPage() {
       const idSet = new Set<string>()
       for (const o of rows) {
         if (o.client_id) idSet.add(o.client_id)
-        const ed = o.assigned_editor ?? o.editor_id
+        const ed = getOrderAssignedEditorId(o)
         if (ed) idSet.add(ed)
       }
       const ids = [...idSet]
@@ -669,6 +735,27 @@ export default function OrdersPage() {
     } finally { setUpdatingId(null) }
   }
 
+  async function assignOrderEditor(orderId: string, editorId: string | null) {
+    setMutationError(null)
+    setEditorAssigningId(orderId)
+    try {
+      const res = await adminAssignOrderEditor(orderId, editorId)
+      if ('error' in res && res.error) {
+        setMutationError(res.error)
+        return
+      }
+      setOrders((prev) =>
+        prev.map((o) => (o.id === orderId ? { ...o, assigned_editor: editorId } : o)),
+      )
+      if (editorId) {
+        const name = editorRoster.find((e) => e.id === editorId)?.full_name
+        if (name) setEditors((prev) => ({ ...prev, [editorId]: name }))
+      }
+    } finally {
+      setEditorAssigningId(null)
+    }
+  }
+
   async function toggleClientAi(orderId: string, next: boolean) {
     setMutationError(null); setAiUpdatingId(orderId)
     try {
@@ -841,16 +928,27 @@ export default function OrdersPage() {
             <option value="created_asc">Күні (ескісі бірінші)</option>
             <option value="title_asc">Кітап атауы (А–Я)</option>
           </select>
-          {isFiltered && (
+          {isFiltered ? (
             <button
               type="button"
               onClick={() => { setSearchInput(''); setFilter('all'); setMonthFilter('') }}
-              className="ml-auto text-[12px] font-semibold text-[color:var(--text-muted)] underline-offset-2 transition-colors hover:text-[color:var(--accent)] hover:underline"
+              className="text-[12px] font-semibold text-[color:var(--text-muted)] underline-offset-2 transition-colors hover:text-[color:var(--accent)] hover:underline md:mr-auto"
             >
               Тазалау ✕
             </button>
-          )}
+          ) : null}
+          <div className="flex w-full flex-wrap justify-end gap-2 md:ml-auto md:w-auto">
+            <AdminOrdersTableControls
+              visibleColumns={visibleColumns}
+              tableCompact={tableCompact}
+              onVisibleColumnsChange={persistVisibleColumns}
+              onTableCompactChange={persistTableCompact}
+            />
+          </div>
         </div>
+        <p className="mt-3 hidden text-[11px] text-[color:var(--text-muted)] md:block">
+          Кесте кең болса, солға-соңға айналдырыңыз. «Бағандар» арқылы қажетсіз бағандарды жасырыңыз — таңдау сақталады.
+        </p>
       </div>
 
       {/* ── Results ───────────────────────────────────────────────────── */}
@@ -884,8 +982,7 @@ export default function OrdersPage() {
           {/* Mobile cards */}
           <div className="flex flex-col gap-3 md:hidden">
             {orders.map((order) => {
-              const eid = order.assigned_editor ?? order.editor_id
-              const editorName = eid ? editors[eid] : ''
+              const assignedEditorId = getOrderAssignedEditorId(order) ?? ''
               return (
                 <div
                   key={order.id}
@@ -906,42 +1003,89 @@ export default function OrdersPage() {
                       </span>
                     </div>
                   </div>
-                  {order.category_id && categories[order.category_id] ? (
+                  {showCol('category') && order.category_id && categories[order.category_id] ? (
                     <span className="mb-2 inline-flex rounded-[var(--radius-sm)] border border-[color:var(--accent-ring)] bg-[color:var(--accent-surface)] px-2 py-0.5 text-[11px] font-semibold text-[color:var(--accent)]">
                       {categories[order.category_id]}
                     </span>
                   ) : null}
                   <dl className="mt-2 grid grid-cols-[88px_1fr] gap-x-2 gap-y-1.5 text-[12px]">
-                    <dt className="text-[color:var(--text-muted)]">Автор</dt>
-                    <dd className="text-[color:var(--text-secondary)]">{order.author_name || '—'}</dd>
-                    <dt className="text-[color:var(--text-muted)]">Алушы</dt>
-                    <dd className="text-[color:var(--text-secondary)]">{order.recipient_name || '—'}</dd>
-                    <dt className="text-[color:var(--text-muted)]">Телефон</dt>
-                    <dd className="font-mono text-[color:var(--text-secondary)]">
-                      {order.client_id && clientPhones[order.client_id] ? clientPhones[order.client_id] : '—'}
-                    </dd>
-                    <dt className="text-[color:var(--text-muted)]">Редактор</dt>
-                    <dd className="text-[color:var(--text-secondary)]">{editorName || '—'}</dd>
-                    <dt className="text-[color:var(--text-muted)]">Күні</dt>
-                    <dd className="tabular-nums text-[color:var(--text-muted)]">
-                      {new Date(order.created_at).toLocaleDateString('ru-RU')}
-                    </dd>
-                    <dt className="text-[color:var(--text-muted)]">Прогресс</dt>
-                    <dd>
-                      <OrderProgressDisplay progress={progressByOrderId[order.id]} />
-                    </dd>
+                    {showCol('author') ? (
+                      <>
+                        <dt className="text-[color:var(--text-muted)]">Автор</dt>
+                        <dd className="text-[color:var(--text-secondary)]">{order.author_name || '—'}</dd>
+                      </>
+                    ) : null}
+                    {showCol('recipient') ? (
+                      <>
+                        <dt className="text-[color:var(--text-muted)]">Алушы</dt>
+                        <dd className="text-[color:var(--text-secondary)]">{order.recipient_name || '—'}</dd>
+                      </>
+                    ) : null}
+                    {showCol('phone') ? (
+                      <>
+                        <dt className="text-[color:var(--text-muted)]">Телефон</dt>
+                        <dd className="font-mono text-[color:var(--text-secondary)]">
+                          {order.client_id && clientPhones[order.client_id] ? clientPhones[order.client_id] : '—'}
+                        </dd>
+                      </>
+                    ) : null}
+                    {showCol('address') && order.delivery_address ? (
+                      <>
+                        <dt className="text-[color:var(--text-muted)]">Мекенжай</dt>
+                        <dd className="text-[color:var(--text-secondary)]">{order.delivery_address}</dd>
+                      </>
+                    ) : null}
+                    {showCol('editor') ? (
+                      <>
+                        <dt className="text-[color:var(--text-muted)]">Редактор</dt>
+                        <dd>
+                          <select
+                            value={assignedEditorId}
+                            disabled={editorAssigningId === order.id}
+                            onChange={(e) => {
+                              const v = e.target.value
+                              void assignOrderEditor(order.id, v ? v : null)
+                            }}
+                            className={clsx(selectCls, 'max-w-full')}
+                          >
+                            <option value="">— Тағайындамаған —</option>
+                            {editorRoster.map((ed) => (
+                              <option key={ed.id} value={ed.id}>{ed.full_name}</option>
+                            ))}
+                          </select>
+                        </dd>
+                      </>
+                    ) : null}
+                    {showCol('date') ? (
+                      <>
+                        <dt className="text-[color:var(--text-muted)]">Күні</dt>
+                        <dd className="tabular-nums text-[color:var(--text-muted)]">
+                          {new Date(order.created_at).toLocaleDateString('ru-RU')}
+                        </dd>
+                      </>
+                    ) : null}
+                    {showCol('progress') ? (
+                      <>
+                        <dt className="text-[color:var(--text-muted)]">Прогресс</dt>
+                        <dd>
+                          <OrderProgressDisplay progress={progressByOrderId[order.id]} />
+                        </dd>
+                      </>
+                    ) : null}
                   </dl>
                   <div className="mt-3.5 flex flex-col gap-2 border-t border-[color:var(--border)] pt-3">
-                    <label className="flex cursor-pointer items-center gap-2 text-[12px] font-semibold text-[color:var(--text-secondary)]">
-                      <input
-                        type="checkbox"
-                        checked={!!order.client_ai_enabled}
-                        disabled={aiUpdatingId === order.id}
-                        onChange={(e) => void toggleClientAi(order.id, e.target.checked)}
-                        className="size-4 accent-[color:var(--accent)]"
-                      />
-                      Клиентке AI
-                    </label>
+                    {showCol('ai') ? (
+                      <label className="flex cursor-pointer items-center gap-2 text-[12px] font-semibold text-[color:var(--text-secondary)]">
+                        <input
+                          type="checkbox"
+                          checked={!!order.client_ai_enabled}
+                          disabled={aiUpdatingId === order.id}
+                          onChange={(e) => void toggleClientAi(order.id, e.target.checked)}
+                          className="size-4 accent-[color:var(--accent)]"
+                        />
+                        Клиентке AI
+                      </label>
+                    ) : null}
                     <div className="flex flex-wrap items-center gap-2">
                       <select
                         value={order.status}
@@ -980,16 +1124,20 @@ export default function OrdersPage() {
 
           {/* Desktop table */}
           <div className="hidden overflow-hidden rounded-[var(--radius-lg)] bg-[color:var(--surface)] shadow-[0_1px_3px_rgba(15,23,42,0.05),0_4px_16px_rgba(15,23,42,0.06)] md:block">
-            <div className="overflow-x-auto">
-              <table className="w-full min-w-[1240px] border-collapse">
+            <div className="overflow-x-auto overscroll-x-contain">
+              <table className="w-full border-collapse" style={{ minWidth: tableMinWidth }}>
                 <thead>
                   <tr className="border-b border-[color:var(--border)] bg-[color:var(--surface-subtle)]">
-                    {['Кітап', 'Түрі', 'Нұсқа', 'Прогресс', 'Автор', 'Алушы', 'Телефон', 'Мекенжай', 'Редактор', 'Күні', 'Статус', 'Өзгерту', 'AI', 'PDF · Мұқаба', 'Жою'].map((h) => (
+                    {visibleColumnList.map((col) => (
                       <th
-                        key={h}
-                        className="whitespace-nowrap px-4 py-3 text-left text-[10px] font-bold uppercase tracking-[0.06em] text-[color:var(--text-muted)]"
+                        key={col.id}
+                        className={clsx(
+                          'whitespace-nowrap text-left text-[10px] font-bold uppercase tracking-[0.06em] text-[color:var(--text-muted)]',
+                          tableCellPad,
+                          col.id === 'book' && stickyBookHeadCls,
+                        )}
                       >
-                        {h}
+                        {col.label}
                       </th>
                     ))}
                   </tr>
@@ -999,130 +1147,40 @@ export default function OrdersPage() {
                     <tr
                       key={order.id}
                       className={clsx(
-                        'transition-colors duration-[var(--transition)] hover:bg-[color:var(--surface-subtle)]/60',
-                        i < orders.length - 1 && 'border-b border-[color:var(--border)]'
+                        'group transition-colors duration-[var(--transition)] hover:bg-[color:var(--surface-subtle)]/60',
+                        i < orders.length - 1 && 'border-b border-[color:var(--border)]',
                       )}
                     >
-                      <td className="px-4 py-3">
-                        <div className="text-[13px] font-semibold text-[color:var(--text-primary)]">
-                          {order.book_title}
-                        </div>
-                      </td>
-                      <td className="px-4 py-3">
-                        {order.category_id && categories[order.category_id] ? (
-                          <span className="inline-flex whitespace-nowrap rounded-[var(--radius-sm)] border border-[color:var(--accent-ring)] bg-[color:var(--accent-surface)] px-2 py-0.5 text-[11px] font-semibold text-[color:var(--accent)]">
-                            {categories[order.category_id]}
-                          </span>
-                        ) : null}
-                      </td>
-                      <td className="px-4 py-3">
-                        {order.trial_mode ? (
-                          <span
-                            className="inline-flex whitespace-nowrap rounded-[var(--radius-sm)] bg-amber-100 px-2 py-0.5 text-[11px] font-semibold text-amber-950 ring-1 ring-amber-200"
-                            title="Тегін кезең — толық қолжетімділік әлі берілмеген"
-                          >
-                            Тегін нұсқа
-                          </span>
-                        ) : (
-                          <span className="text-[11px] font-medium text-[color:var(--text-muted)]">Толық</span>
-                        )}
-                      </td>
-                      <td className="px-4 py-3">
-                        <OrderProgressDisplay progress={progressByOrderId[order.id]} />
-                      </td>
-                      <td className="px-4 py-3 text-[13px] text-[color:var(--text-secondary)]">{order.author_name}</td>
-                      <td className="px-4 py-3 text-[13px] text-[color:var(--text-secondary)]">{order.recipient_name}</td>
-                      <td className="whitespace-nowrap px-4 py-3 font-mono text-[12px] text-[color:var(--text-secondary)]">
-                        {order.client_id && clientPhones[order.client_id] ? clientPhones[order.client_id] : <span className="text-[color:var(--text-muted)]">—</span>}
-                      </td>
-                      <td className="max-w-[180px] px-4 py-3 text-[12px] text-[color:var(--text-muted)]">
-                        <div className="truncate">{order.delivery_address}</div>
-                      </td>
-                      <td className="max-w-[130px] px-4 py-3 text-[12px] text-[color:var(--text-secondary)]">
-                        {(() => {
-                          const eid = order.assigned_editor ?? order.editor_id
-                          const name = eid ? editors[eid] : ''
-                          return name ? <span className="font-medium">{name}</span> : <span className="text-[color:var(--text-muted)]">—</span>
-                        })()}
-                      </td>
-                      <td className="whitespace-nowrap px-4 py-3 text-[11px] tabular-nums text-[color:var(--text-muted)]">
-                        {new Date(order.created_at).toLocaleDateString('ru-RU')}
-                      </td>
-                      <td className="px-4 py-3">
-                        <span className={orderStatusWorkspacePill(order.status)}>
-                          {orderStatusLabel(order.status)}
-                        </span>
-                      </td>
-                      <td className="px-4 py-3">
-                        <div className="flex flex-wrap items-center gap-1.5">
-                          <select
-                            value={order.status}
-                            disabled={updatingId === order.id}
-                            onChange={(e) => updateStatus(order.id, e.target.value)}
-                            className={selectCls}
-                          >
-                            {ORDER_STATUS_ORDER.map((s) => (
-                              <option key={s} value={s}>{orderStatusLabel(s)}</option>
-                            ))}
-                          </select>
-                          {(order.status === 'completed' || order.status === 'checking') && (
-                            <Button
-                              type="button" variant="secondary" size="sm"
-                              disabled={updatingId === order.id}
-                              onClick={() => resetToChecking(order.id)}
-                              className="border-amber-200 bg-amber-50 text-amber-950 hover:bg-amber-100"
-                            >
-                              → Тексеруде
-                            </Button>
-                          )}
-                          {order.status !== 'filling' && (
-                            <Button
-                              type="button" variant="secondary" size="sm"
-                              disabled={updatingId === order.id}
-                              onClick={() => resetToFilling(order.id)}
-                              className="border-[color:var(--accent-ring)] bg-[color:var(--accent-surface)] text-[color:var(--accent)] hover:bg-[color:var(--accent-muted)]"
-                            >
-                              → Толтыруда
-                            </Button>
-                          )}
-                        </div>
-                      </td>
-                      <td className="px-4 py-3">
-                        <label className="flex cursor-pointer items-center gap-1.5 text-[11px] font-semibold text-[color:var(--text-secondary)]">
-                          <input
-                            type="checkbox"
-                            checked={!!order.client_ai_enabled}
-                            disabled={aiUpdatingId === order.id}
-                            onChange={(e) => void toggleClientAi(order.id, e.target.checked)}
-                            className="size-4 shrink-0 accent-[color:var(--accent)]"
-                          />
-                          <span className="max-w-[5rem] leading-snug">AI</span>
-                        </label>
-                      </td>
-                      <td className="px-4 py-3">
-                        <div className="flex flex-wrap gap-1">
-                          <PDFButton order={order} />
-                          <AdminCoverDownloadButton order={order} />
-                        </div>
-                      </td>
-                      <td className="whitespace-nowrap px-4 py-3">
-                        <Button
-                          type="button"
-                          variant="secondary"
-                          size="sm"
-                          disabled={isDeletePending}
-                          className="border-red-200 bg-red-50/90 text-red-800 hover:border-red-300 hover:bg-red-100"
-                          onClick={() => {
+                      {visibleColumnList.map((col) => (
+                        <AdminOrderTableCell
+                          key={col.id}
+                          order={order}
+                          columnId={col.id}
+                          cellPad={tableCellPad}
+                          stickyBookCls={stickyBookCls}
+                          categories={categories}
+                          clientPhones={clientPhones}
+                          progress={progressByOrderId[order.id]}
+                          editorRoster={editorRoster}
+                          editorAssigningId={editorAssigningId}
+                          updatingId={updatingId}
+                          aiUpdatingId={aiUpdatingId}
+                          isDeletePending={isDeletePending}
+                          selectCls={selectCls}
+                          onAssignEditor={(id, ed) => void assignOrderEditor(id, ed)}
+                          onUpdateStatus={updateStatus}
+                          onResetToChecking={resetToChecking}
+                          onResetToFilling={resetToFilling}
+                          onToggleClientAi={(id, en) => void toggleClientAi(id, en)}
+                          onDeleteClick={(id, title) => {
                             setDeleteError(null)
-                            setDeleteDialog({
-                              id: order.id,
-                              bookTitle: (order.book_title || '').trim() || 'Тапсырыс',
-                            })
+                            setDeleteDialog({ id, bookTitle: title })
                           }}
-                        >
-                          Жою
-                        </Button>
-                      </td>
+                          PDFButton={PDFButton}
+                          AdminCoverDownloadButton={AdminCoverDownloadButton}
+                          OrderProgressDisplay={OrderProgressDisplay}
+                        />
+                      ))}
                     </tr>
                   ))}
                 </tbody>

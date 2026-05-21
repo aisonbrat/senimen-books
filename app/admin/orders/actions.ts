@@ -27,6 +27,32 @@ export async function adminUpdateOrderStatus(orderId: string, status: string) {
   return { success: true as const }
 }
 
+export async function adminAssignOrderEditor(orderId: string, editorId: string | null) {
+  const gate = await requireAdminOrManager()
+  if (!gate.ok) return { error: gate.error }
+
+  const { client: admin, error: keyErr } = makeServiceClient()
+  if (!admin) return { error: keyErr }
+
+  if (editorId) {
+    const { data: prof, error: pe } = await admin
+      .from('profiles')
+      .select('id')
+      .eq('id', editorId)
+      .eq('role', 'editor')
+      .maybeSingle()
+    if (pe) return { error: pe.message }
+    if (!prof) return { error: 'Редактор табылмады' }
+  }
+
+  const { error } = await admin
+    .from('orders')
+    .update({ assigned_editor: editorId })
+    .eq('id', orderId)
+  if (error) return { error: error.message }
+  return { success: true as const }
+}
+
 export async function adminSetOrderClientAiEnabled(orderId: string, enabled: boolean) {
   const gate = await requireAdminOrManager()
   if (!gate.ok) return { error: gate.error }

@@ -42,6 +42,11 @@ import {
   splitStoredPhotoPipeList,
 } from '@/lib/utils/bookPhotoUrl'
 import { SignedBookPhotoImg } from '@/components/editor/SignedBookPhotoImg'
+import {
+  canEditorRoleEditOrder,
+  editorAssignmentBlockMessage,
+  editorAssignmentBlockReason,
+} from '@/lib/utils/editorOrderAccess'
 
 const AnswerRichTextEditor = dynamic(
   () => import('@/components/editor/AnswerRichTextEditor').then((m) => m.AnswerRichTextEditor),
@@ -358,27 +363,21 @@ export default function EditorViewPage() {
     addCustomPage,
     moveCustomPage,
     completeEditing,
-    assignEditor,
   } = useEditorData(orderId)
+
+  const [currentUserId, setCurrentUserId] = useState<string | null>(null)
+  useEffect(() => {
+    void supabase.auth.getUser().then(({ data: { user } }) => {
+      setCurrentUserId(user?.id ?? null)
+    })
+  }, [supabase])
 
   const orderStatus = (order as any)?.status
   const editorDone = orderStatus === 'completed'
-  const clientAiEnabled = (order as Order | null)?.client_ai_enabled === true
-  const freezeEditing = editorDone || (actorRole === 'editor' && clientAiEnabled)
+  const canEdit = canEditorRoleEditOrder(order as Order | null, currentUserId, actorRole)
+  const assignmentBlock = editorAssignmentBlockReason(order as Order | null, currentUserId, actorRole)
+  const freezeEditing = editorDone || (actorRole === 'editor' && !canEdit)
   const staffPhotosLocked = actorRole === 'editor' && !freezeEditing
-
-  // Assign editor when they open a checking order (skip when editing is finished)
-  useEffect(() => {
-    if (!order || editorDone || orderStatus !== 'checking') return
-    if (actorRole === 'editor' && clientAiEnabled) return
-    supabase.auth.getUser().then(async ({ data: { user } }) => {
-      if (!user) return
-      const current = order as { assigned_editor?: string | null }
-      if (!current.assigned_editor) {
-        await assignEditor(user.id)
-      }
-    })
-  }, [order, orderStatus, editorDone, assignEditor, actorRole, clientAiEnabled, supabase])
 
   const flatQuestions = useMemo(
     () => chapters.filter((c) => c.part_kind !== 'faktiler').flatMap((c) => c.questions ?? []),
@@ -637,20 +636,20 @@ export default function EditorViewPage() {
           </div>
         </div>
 
-        {freezeEditing && !editorDone && (
+        {freezeEditing && !editorDone && assignmentBlock && (
           <div
             style={{
-              background: '#EFF6FF',
+              background: '#FFFBEB',
               padding: '12px 24px',
               textAlign: 'center',
               fontSize: 13,
               fontWeight: 600,
-              color: '#1E40AF',
+              color: '#92400E',
               flexShrink: 0,
               letterSpacing: '-0.01em',
             }}
           >
-            Клиент осы кітапқа AI арқылы өз бетінше өңдейді. Редактор рөлімен мәтін өзгерту жабық.
+            {editorAssignmentBlockMessage(assignmentBlock)}
           </div>
         )}
 

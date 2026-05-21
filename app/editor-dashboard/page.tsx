@@ -15,6 +15,7 @@ import {
 } from '@/lib/design/order-status'
 import type { Order } from '@/lib/types'
 import type { User } from '@supabase/supabase-js'
+import { canEditorRoleEditOrder } from '@/lib/utils/editorOrderAccess'
 
 export default function EditorDashboardPage() {
   const [user, setUser] = useState<User | null>(null)
@@ -74,12 +75,16 @@ export default function EditorDashboardPage() {
   const sortedFiltered = useMemo(() => {
     if (filter !== 'all') return filtered
     return [...filtered].sort((a, b) => {
-      const aEditable = a.status === 'checking' ? 0 : 1
-      const bEditable = b.status === 'checking' ? 0 : 1
-      if (aEditable !== bEditable) return aEditable - bEditable
+      const rank = (o: Order) => {
+        if (canEditorRoleEditOrder(o, user?.id, actorRole)) return 0
+        if (o.status === 'checking') return 1
+        return 2
+      }
+      const diff = rank(a) - rank(b)
+      if (diff !== 0) return diff
       return new Date(b.created_at).getTime() - new Date(a.created_at).getTime()
     })
-  }, [filtered, filter])
+  }, [filtered, filter, user?.id, actorRole])
 
   if (!user) return null
 
@@ -165,7 +170,10 @@ export default function EditorDashboardPage() {
             {sortedFiltered.map((order) => {
               const clientAi = orderHasClientAi(order)
               const isEditorUser = actorRole === 'editor'
-              const isEditable = roleReady && order.status === 'checking' && !(isEditorUser && clientAi)
+              const isEditable =
+                roleReady && canEditorRoleEditOrder(order, user?.id, actorRole)
+              const awaitingAssignment =
+                isEditorUser && order.status === 'checking' && !isEditable
               const isDone = order.status === 'delivered' || order.status === 'completed'
               const isUrgent = order.status === 'checking' && isEditable
               return (
@@ -197,6 +205,11 @@ export default function EditorDashboardPage() {
                           {isEditorUser && clientAi ? (
                             <span className="rounded-[var(--radius-sm)] bg-sky-50 px-2 py-0.5 text-[10px] font-bold uppercase tracking-wide text-sky-700 ring-1 ring-sky-200">
                               Клиент AI
+                            </span>
+                          ) : null}
+                          {awaitingAssignment ? (
+                            <span className="rounded-[var(--radius-sm)] bg-[color:var(--surface-subtle)] px-2 py-0.5 text-[10px] font-semibold text-[color:var(--text-muted)] ring-1 ring-[color:var(--border)]">
+                              Тағайындалмаған
                             </span>
                           ) : null}
                         </div>
