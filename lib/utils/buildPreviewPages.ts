@@ -13,6 +13,8 @@ import { paginateBookBody, paginateQuestionAnswer } from '@/lib/utils/paginateBo
 import { answerTextIsEffectivelyEmpty } from '@/lib/utils/answerHtml'
 import { answerDisplaysAsPhotoContent } from '@/lib/utils/bookPhotoUrl'
 import { normalizeFixedRectangleColor } from '@/lib/utils/fixedChapterRectPalette'
+import { resolveOrderFixedPhrase } from '@/lib/utils/fixedChapterPhrase'
+import { resolveCoverTitleFontMm, type CoverTitleFontPreset } from '@/lib/bookLayout'
 
 /** DB orders carry fields beyond the typed `Order` interface; keep `unknown` for compatibility. */
 export type PreviewOrderInput = unknown | null
@@ -40,6 +42,11 @@ export interface BuildPreviewPagesParams {
   typography?: BookTypography
   /** Per-chapter user photo for fixed pages (`chapter_id` → storage/public URL). */
   chapterFixedPhotos?: Record<string, string>
+  /** Per-order band text override (`chapter_id` → phrase); omit key to use category template. */
+  chapterFixedPhraseOverrides?: Record<string, string>
+  /** Staff-hidden chapters (no title page, fixed page, or questions in preview/PDF). */
+  editorSkippedChapterIds?: string[]
+  coverTitleFontPreset?: CoverTitleFontPreset
 }
 
 /** Slot `[low, high)` for custom pages inserted after question `questionFlatIndex` (matches preview/editor bands). */
@@ -274,6 +281,9 @@ export function buildPreviewPages({
   faktiler_facts: faktilerFactsArg,
   typography: typographyArg,
   chapterFixedPhotos: chapterFixedPhotosArg,
+  chapterFixedPhraseOverrides: chapterFixedPhraseOverridesArg,
+  editorSkippedChapterIds: editorSkippedChapterIdsArg,
+  coverTitleFontPreset: coverTitleFontPresetArg,
 }: BuildPreviewPagesParams): PreviewPage[] {
   if (order == null) return []
 
@@ -282,6 +292,10 @@ export function buildPreviewPages({
 
   const o = order as Record<string, unknown>
   const chapterFixedPhotos = chapterFixedPhotosArg ?? {}
+  const chapterFixedPhraseOverrides = chapterFixedPhraseOverridesArg ?? {}
+  const skippedChapters = new Set(
+    (editorSkippedChapterIdsArg ?? []).map((id) => String(id).trim()).filter(Boolean),
+  )
   const fixedRectColor = normalizeFixedRectangleColor(String(o.fixed_rectangle_color ?? ''))
   const mergedFaktilerFacts =
     faktilerFactsArg ??
@@ -289,10 +303,13 @@ export function buildPreviewPages({
 
   const spine: PreviewPage[] = []
 
+  const coverTitleFontMm = resolveCoverTitleFontMm(order, coverTitleFontPresetArg)
+
   spine.push({
     type: 'cover',
     bookTitle: String(o.book_title ?? ''),
     authorName: String(o.author_name ?? ''),
+    titleFontMm: coverTitleFontMm,
   })
 
   if (algy_soz?.trim()) {
@@ -314,6 +331,7 @@ export function buildPreviewPages({
   let chapterNum = 0
   for (const chapter of chaptersSorted) {
     if (chapter.part_kind === 'faktiler') continue
+    if (skippedChapters.has(chapter.id)) continue
 
     const chapterQuestions = chapter.questions ?? []
     const answeredInChapter = chapterQuestions.filter((q) => !answerTextIsEffectivelyEmpty(answers[q.id] ?? ''))
@@ -321,9 +339,16 @@ export function buildPreviewPages({
       (q) =>
         filledCustomPagesInQuestionSlot(q.id, flatQuestions, questionIndexById, customPages).length > 0
     )
-    const fixedPhrase = (chapter.fixed_phrase_kk || '').trim()
-    const chapterHasFixedSlot = !!(chapter.fixed_phrase_id && fixedPhrase)
-    if (answeredInChapter.length === 0 && !chapterHasCustom && !chapterHasFixedSlot) continue
+    const fixedPhrase = resolveOrderFixedPhrase(
+      chapter.id,
+      chapter.fixed_phrase_kk,
+      chapterFixedPhraseOverrides,
+    )
+    const chapterHasFixedSlot = !!chapter.fixed_phrase_id
+    const hasFixedPhoto = !!(chapterFixedPhotos[chapter.id] || '').trim()
+    const chapterHasContent =
+      answeredInChapter.length > 0 || chapterHasCustom || hasFixedPhoto
+    if (!chapterHasContent) continue
 
     chapterNum++
     const chapterFlatIndices = chapterQuestions

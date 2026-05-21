@@ -20,6 +20,9 @@ export function usePreviewPages() {
   const algyFontPresetOverride = useEditorStore((s) => s.algyFontPresetOverride)
   const hatFontPresetOverride = useEditorStore((s) => s.hatFontPresetOverride)
   const chapterFixedPhotos = useEditorStore((s) => s.chapterFixedPhotos)
+  const chapterFixedPhraseOverrides = useEditorStore((s) => s.chapterFixedPhraseOverrides)
+  const editorSkippedChapterIds = useEditorStore((s) => s.editorSkippedChapterIds)
+  const coverTitleFontPreset = useEditorStore((s) => s.coverTitleFontPreset)
 
   return useMemo(() => {
     const mergedOrder =
@@ -39,6 +42,9 @@ export function usePreviewPages() {
       faktiler_facts,
       typography: { fontPreset: answerFontPreset, textAlign: answerTextAlign },
       chapterFixedPhotos,
+      chapterFixedPhraseOverrides,
+      editorSkippedChapterIds,
+      coverTitleFontPreset,
     })
   }, [
     order,
@@ -53,5 +59,8 @@ export function usePreviewPages() {
     algyFontPresetOverride,
     hatFontPresetOverride,
     chapterFixedPhotos,
+    chapterFixedPhraseOverrides,
+    editorSkippedChapterIds,
+    coverTitleFontPreset,
   ])
 }

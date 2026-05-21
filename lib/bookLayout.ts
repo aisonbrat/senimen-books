@@ -7,6 +7,42 @@ export const COVER_PRODUCT_TAGLINE_KK = 'Естелік • Альбом • К�
 export const COVER_CONTENT_BLOCK_TOP_MM = 74
 
 export const COVER_TITLE_FONT_MM = 13.5
+/** jsPDF `setFontSize` uses points; physical mm → pt for print. */
+export const MM_TO_PT = 72 / 25.4
+
+export function mmFontSizeToPdfPoints(fontSizeMm: number): number {
+  return fontSizeMm * MM_TO_PT
+}
+/** Discrete cover title sizes (print mm). DB: `orders.cover_title_font_preset`. */
+export const COVER_TITLE_FONT_PRESETS = ['11', '13.5', '15', '17', '20'] as const
+export type CoverTitleFontPreset = (typeof COVER_TITLE_FONT_PRESETS)[number]
+export const DEFAULT_COVER_TITLE_FONT_PRESET: CoverTitleFontPreset = '13.5'
+
+export function normalizeCoverTitleFontPreset(v: unknown): CoverTitleFontPreset {
+  const s = String(v ?? '').trim()
+  if ((COVER_TITLE_FONT_PRESETS as readonly string[]).includes(s)) {
+    return s as CoverTitleFontPreset
+  }
+  return DEFAULT_COVER_TITLE_FONT_PRESET
+}
+
+export function coverTitlePresetToMm(preset: CoverTitleFontPreset): number {
+  const n = Number(preset)
+  return Number.isFinite(n) && n > 0 ? n : COVER_TITLE_FONT_MM
+}
+
+/** Single resolver for preview + PDF (store override, explicit arg, or order row). */
+export function resolveCoverTitleFontMm(
+  order: unknown,
+  presetOverride?: CoverTitleFontPreset | string | null,
+): number {
+  const r = (order ?? {}) as { cover_title_font_preset?: unknown }
+  const preset = normalizeCoverTitleFontPreset(
+    presetOverride ?? r.cover_title_font_preset,
+  )
+  return coverTitlePresetToMm(preset)
+}
+
 export const COVER_TAGLINE_FONT_MM = 5.15
 export const COVER_AUTHOR_FONT_MM = 5.15
 

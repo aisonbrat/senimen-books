@@ -11,6 +11,7 @@ import {
   normalizeFixedRectangleColor,
 } from '@/lib/utils/fixedChapterRectPalette'
 import { TRIAL_FREE_QUESTION_COUNT } from '@/lib/constants/trialBook'
+import { resolveOrderFixedPhrase } from '@/lib/utils/fixedChapterPhrase'
 
 interface Props {
   uploadFixedChapterPhoto: (chapterId: string, file: File) => void | Promise<void>
@@ -46,6 +47,10 @@ export function FixedChapterBookSettingsPanel({
 }: Props) {
   const chapters = useEditorStore((s) => s.chapters)
   const chapterFixedPhotos = useEditorStore((s) => s.chapterFixedPhotos)
+  const chapterFixedPhraseOverrides = useEditorStore((s) => s.chapterFixedPhraseOverrides)
+  const setChapterFixedPhraseOverride = useEditorStore((s) => s.setChapterFixedPhraseOverride)
+  const editorSkippedChapterIds = useEditorStore((s) => s.editorSkippedChapterIds)
+  const setChapterSkippedFromBook = useEditorStore((s) => s.setChapterSkippedFromBook)
   const order = useEditorStore((s) => s.order)
   const setOrder = useEditorStore((s) => s.setOrder)
 
@@ -114,7 +119,10 @@ export function FixedChapterBookSettingsPanel({
           Фото жүктеу
         </p>
         <p className="mb-4 text-[11px] leading-relaxed text-[color:var(--text-secondary)]">
-          Әр тарау үшін үстіңгі 60% аумаққа бір фото. Мәтін үлгіден келеді, өзгерту мүмкін емес.
+          Әр тарау үшін үстіңгі 60% аумаққа бір фото.
+          {disabled
+            ? ' Мәтін үлгіден келеді.'
+            : ' Төменгі мәтінді осы кітапқа сайын түзетуге болады (клиент тапсырғаннан кейін).'}
         </p>
         <ul className="flex flex-col gap-2.5">
           {rows.map((ch) => {
@@ -124,6 +132,7 @@ export function FixedChapterBookSettingsPanel({
               trialMode === true &&
               minIdx !== Number.MAX_SAFE_INTEGER &&
               minIdx >= TRIAL_FREE_QUESTION_COUNT
+            const skippedFromBook = editorSkippedChapterIds.includes(ch.id)
             return (
               <li
                 key={ch.id}
@@ -132,14 +141,50 @@ export function FixedChapterBookSettingsPanel({
                 )}
               >
                 <div className="min-w-0 flex-1 text-center sm:text-left">
-                  <p className="text-[13px] font-bold tracking-tight text-[color:var(--text-primary)]">
+                  <p
+                    className={clsx(
+                      'text-[13px] font-bold tracking-tight',
+                      skippedFromBook
+                        ? 'text-[color:var(--text-muted)] line-through'
+                        : 'text-[color:var(--text-primary)]',
+                    )}
+                  >
                     {ch.title_kk}
                   </p>
-                  {ch.fixed_phrase_kk ? (
-                    <p className="mx-auto mt-1 max-w-[42ch] text-[12px] italic leading-snug text-[color:var(--text-secondary)] sm:mx-0">
-                      {ch.fixed_phrase_kk}
-                    </p>
+                  {!disabled && !rowTrialLocked ? (
+                    <label className="mt-2 flex cursor-pointer items-center justify-center gap-2 sm:justify-start">
+                      <input
+                        type="checkbox"
+                        checked={skippedFromBook}
+                        onChange={(e) => setChapterSkippedFromBook(ch.id, e.target.checked)}
+                        className="size-3.5 accent-[color:var(--accent)]"
+                      />
+                      <span className="text-[11px] font-medium text-[color:var(--text-secondary)]">
+                        Кітаптан жасыру (атау + тұрақты бет)
+                      </span>
+                    </label>
                   ) : null}
+                  {disabled ? (
+                    ch.fixed_phrase_kk ? (
+                      <p className="mx-auto mt-1 max-w-[42ch] text-[12px] italic leading-snug text-[color:var(--text-secondary)] sm:mx-0">
+                        {ch.fixed_phrase_kk}
+                      </p>
+                    ) : null
+                  ) : (
+                    <label className="mt-2 block text-left">
+                      <span className="mb-1 block text-[10px] font-semibold uppercase tracking-[0.1em] text-[color:var(--text-muted)]">
+                        Тұрақты фраза
+                      </span>
+                      <textarea
+                        value={resolveOrderFixedPhrase(ch.id, ch.fixed_phrase_kk, chapterFixedPhraseOverrides)}
+                        disabled={disabled || rowTrialLocked}
+                        onChange={(e) => setChapterFixedPhraseOverride(ch.id, e.target.value)}
+                        rows={3}
+                        className="w-full resize-y rounded-[var(--radius-md)] border border-[color:var(--border)] bg-[color:var(--surface)] px-2.5 py-2 text-[12px] italic leading-snug text-[color:var(--text-primary)] outline-none focus-visible:ring-2 focus-visible:ring-[color:var(--accent-ring)] disabled:opacity-60"
+                        placeholder={ch.fixed_phrase_kk || 'Фраза мәтіні…'}
+                      />
+                    </label>
+                  )}
                 </div>
                 <div className="flex shrink-0 flex-row items-center justify-center gap-3 sm:flex-col sm:justify-center">
                   {path.trim() ? (

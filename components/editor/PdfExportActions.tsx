@@ -12,6 +12,8 @@ import {
   PDF_EXPORT_PNG_LABEL,
 } from '@/lib/utils/pdfExport'
 import type { BookTypography } from '@/lib/utils/buildPreviewPages'
+import { normalizeCoverTitleFontPreset } from '@/lib/bookLayout'
+import { useEditorStore } from '@/lib/store/editorStore'
 
 type PdfExportActionsProps = {
   order: ExportOrderInput
@@ -19,6 +21,9 @@ type PdfExportActionsProps = {
   answers: Record<string, string>
   customPages: CustomPage[]
   chapterFixedPhotos?: Record<string, string>
+  chapterFixedPhraseOverrides?: Record<string, string>
+  editorSkippedChapterIds?: string[]
+  coverTitleFontPreset?: import('@/lib/bookLayout').CoverTitleFontPreset
   typography?: BookTypography | null
   extras?: {
     algy_soz?: string
@@ -27,6 +32,8 @@ type PdfExportActionsProps = {
   }
   /** Compact row for admin table; default false for editor bar. */
   compact?: boolean
+  /** Persist editor state (e.g. cover title mm) before building the PDF. */
+  beforeExport?: () => Promise<boolean | void>
 }
 
 export function PdfExportActions({
@@ -35,9 +42,13 @@ export function PdfExportActions({
   answers,
   customPages,
   chapterFixedPhotos,
+  chapterFixedPhraseOverrides,
+  editorSkippedChapterIds,
+  coverTitleFontPreset,
   typography,
   extras,
   compact = false,
+  beforeExport,
 }: PdfExportActionsProps) {
   const [exporting, setExporting] = useState(false)
   const [progress, setProgress] = useState({ current: 0, total: 0 })
@@ -64,11 +75,18 @@ export function PdfExportActions({
     setExporting(true)
     setProgress({ current: 0, total: 0 })
     try {
+      if (beforeExport) {
+        await beforeExport()
+      }
+      const liveCoverPreset = normalizeCoverTitleFontPreset(
+        coverTitleFontPreset ?? useEditorStore.getState().coverTitleFontPreset,
+      )
       const pdfOrder = await enrichColophon({
         ...order,
         algy_soz: extras?.algy_soz ?? order.algy_soz,
         hat_text: extras?.hat_text ?? order.hat_text,
         faktiler_facts: extras?.faktiler_facts ?? order.faktiler_facts,
+        cover_title_font_preset: liveCoverPreset,
       })
       await runClientBookPdfExport({
         order: pdfOrder,
@@ -76,6 +94,9 @@ export function PdfExportActions({
         answers,
         customPages,
         chapterFixedPhotos,
+        chapterFixedPhraseOverrides,
+        editorSkippedChapterIds,
+        coverTitleFontPreset: liveCoverPreset,
         typography,
         photoMode,
         onProgress: (current, total) => setProgress({ current, total }),

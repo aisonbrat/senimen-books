@@ -135,6 +135,32 @@ export function showEditorActionErrorToast(titleKk: string, detail?: string): vo
   requestAnimationFrame(() => el?.scrollIntoView({ block: 'nearest' }))
 }
 
+const SUCCESS_TOAST_ID = 'editor-save-success-toast'
+
+/** Brief confirmation after manual «Сақтау». */
+export function showEditorSaveSuccessToast(): void {
+  if (typeof document === 'undefined') return
+  const root = document.body
+  let el = document.getElementById(SUCCESS_TOAST_ID) as HTMLDivElement | null
+  if (!el) {
+    el = document.createElement('div')
+    el.id = SUCCESS_TOAST_ID
+    el.setAttribute('role', 'status')
+    el.setAttribute('aria-live', 'polite')
+    el.style.cssText =
+      'position:fixed;left:0;right:0;bottom:max(88px,env(safe-area-inset-bottom));z-index:99997;padding:0 12px;pointer-events:none;display:flex;justify-content:center;'
+    root.appendChild(el)
+  }
+  el.innerHTML = `
+    <div style="pointer-events:auto;max-width:min(100vw - 24px, 360px);margin:0 auto;border-radius:12px;border:1px solid rgba(5,150,105,0.35);background:linear-gradient(180deg,#ecfdf5 0%,#d1fae5 100%);box-shadow:0 12px 40px rgba(15,23,42,0.1);padding:12px 16px;font-family:var(--font-ui-sans, system-ui, sans-serif);">
+      <div style="font-size:13px;font-weight:700;color:#065f46;">Сақталды</div>
+      <div style="margin-top:4px;font-size:12px;color:#047857;">Тақырып өлшемі, «Кітаптан жасыру» және тұрақты беттер сақталды.</div>
+    </div>
+  `
+  const dismiss = () => el?.remove()
+  setTimeout(dismiss, 3200)
+}
+
 function escapeHtml(s: string): string {
   return s
     .replace(/&/g, '&amp;')

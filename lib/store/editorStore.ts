@@ -3,7 +3,14 @@ import { devtools } from 'zustand/middleware'
 import { useShallow } from 'zustand/react/shallow'
 import type { Chapter, CustomPage, Order, Answers, FaktilerFactSlot } from '@/lib/types'
 import { newFaktilerFactId } from '@/lib/utils/faktilerFacts'
-import { normalizeGlobalFontPreset, normalizeSectionFontPreset, type AnswerFontPreset, type AnswerTextAlign } from '@/lib/bookLayout'
+import {
+  normalizeCoverTitleFontPreset,
+  normalizeGlobalFontPreset,
+  normalizeSectionFontPreset,
+  type AnswerFontPreset,
+  type AnswerTextAlign,
+  type CoverTitleFontPreset,
+} from '@/lib/bookLayout'
 
 interface EditorState {
   // Data
@@ -20,11 +27,16 @@ interface EditorState {
   faktiler_example_facts: string
   answerFontPreset: AnswerFontPreset
   answerTextAlign: AnswerTextAlign
+  coverTitleFontPreset: CoverTitleFontPreset
   /** null = inherit global answer_font_preset for that section */
   algyFontPresetOverride: AnswerFontPreset | null
   hatFontPresetOverride: AnswerFontPreset | null
   /** User photos for fixed chapter pages (chapterId → public/storage URL). */
   chapterFixedPhotos: Record<string, string>
+  /** Per-order fixed band text; key absent = use category template phrase. */
+  chapterFixedPhraseOverrides: Record<string, string>
+  /** Chapters excluded from preview/PDF (staff only, after client submit). */
+  editorSkippedChapterIds: string[]
 
   // UI State
   activeChapterId: string | null
@@ -51,8 +63,12 @@ interface EditorState {
   removeFaktilerFactAt: (index: number) => void
   /** Atomically updates book typography (mirrored to orders row on save). */
   setAnswerTypography: (patch: Partial<{ preset: AnswerFontPreset; align: AnswerTextAlign }>) => void
+  setCoverTitleFontPreset: (preset: CoverTitleFontPreset) => void
   setSectionFontPresetOverride: (section: 'algy' | 'hat', preset: AnswerFontPreset | null) => void
   setChapterFixedPhotoPath: (chapterId: string, photoPath: string | null) => void
+  setChapterFixedPhraseOverride: (chapterId: string, phrase: string) => void
+  setChapterSkippedFromBook: (chapterId: string, skipped: boolean) => void
+  setEditorSkippedChapterIds: (ids: string[]) => void
 
   /** Clears editor slices before loading another order (avoids stale answers leaking across navigations). */
   clearEditorSessionForNewOrder: () => void
@@ -71,9 +87,12 @@ interface EditorState {
     activeChapterId: string | null
     answerFontPreset?: AnswerFontPreset
     answerTextAlign?: AnswerTextAlign
+    coverTitleFontPreset?: CoverTitleFontPreset
     algyFontPresetOverride?: AnswerFontPreset | null
     hatFontPresetOverride?: AnswerFontPreset | null
     chapterFixedPhotos?: Record<string, string>
+    chapterFixedPhraseOverrides?: Record<string, string>
+    editorSkippedChapterIds?: string[]
   }) => void
 
   // Actions — UI
@@ -104,9 +123,12 @@ export const useEditorStore = create<EditorState>()(
       faktiler_example_facts: '',
       answerFontPreset: '18',
       answerTextAlign: 'left',
+      coverTitleFontPreset: normalizeCoverTitleFontPreset(null),
       algyFontPresetOverride: null,
       hatFontPresetOverride: null,
       chapterFixedPhotos: {},
+      chapterFixedPhraseOverrides: {},
+      editorSkippedChapterIds: [],
       activeChapterId: null,
       spreadIndex: 0,
       saving: false,
@@ -185,6 +207,9 @@ export const useEditorStore = create<EditorState>()(
           answerTextAlign: patch.align ?? state.answerTextAlign,
         })),
 
+      setCoverTitleFontPreset: (preset) =>
+        set({ coverTitleFontPreset: normalizeCoverTitleFontPreset(preset) }),
+
       setSectionFontPresetOverride: (section, preset) =>
         set(
           section === 'algy'
@@ -206,6 +231,29 @@ export const useEditorStore = create<EditorState>()(
           return { chapterFixedPhotos: next }
         }),
 
+      setChapterFixedPhraseOverride: (chapterId, phrase) =>
+        set((state) => ({
+          chapterFixedPhraseOverrides: {
+            ...state.chapterFixedPhraseOverrides,
+            [chapterId]: phrase,
+          },
+        })),
+
+      setChapterSkippedFromBook: (chapterId, skipped) =>
+        set((state) => {
+          const id = chapterId.trim()
+          if (!id) return state
+          const setIds = new Set(state.editorSkippedChapterIds)
+          if (skipped) setIds.add(id)
+          else setIds.delete(id)
+          return { editorSkippedChapterIds: [...setIds] }
+        }),
+
+      setEditorSkippedChapterIds: (ids) =>
+        set({
+          editorSkippedChapterIds: ids.map((id) => String(id).trim()).filter(Boolean),
+        }),
+
       clearEditorSessionForNewOrder: () =>
         set({
           order: null,
@@ -220,9 +268,12 @@ export const useEditorStore = create<EditorState>()(
           faktiler_example_facts: '',
           answerFontPreset: '18',
           answerTextAlign: 'left',
+          coverTitleFontPreset: normalizeCoverTitleFontPreset(null),
           algyFontPresetOverride: null,
           hatFontPresetOverride: null,
           chapterFixedPhotos: {},
+      chapterFixedPhraseOverrides: {},
+          editorSkippedChapterIds: [],
           activeChapterId: null,
           spreadIndex: 0,
         }),
@@ -241,9 +292,13 @@ export const useEditorStore = create<EditorState>()(
           faktiler_example_facts: payload.faktiler_example_facts ?? '',
           answerFontPreset: payload.answerFontPreset ?? '18',
           answerTextAlign: payload.answerTextAlign ?? 'left',
+          coverTitleFontPreset:
+            payload.coverTitleFontPreset ?? normalizeCoverTitleFontPreset(null),
           algyFontPresetOverride: payload.algyFontPresetOverride ?? null,
           hatFontPresetOverride: payload.hatFontPresetOverride ?? null,
           chapterFixedPhotos: { ...(payload.chapterFixedPhotos ?? {}) },
+          chapterFixedPhraseOverrides: { ...(payload.chapterFixedPhraseOverrides ?? {}) },
+          editorSkippedChapterIds: [...(payload.editorSkippedChapterIds ?? [])],
           activeChapterId: payload.activeChapterId,
           spreadIndex: 0,
         }),

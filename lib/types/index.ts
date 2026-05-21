@@ -94,6 +94,10 @@ export interface Order {
   // Typography settings
   answer_font_preset?: string
   answer_text_align?: 'justify' | 'left'
+  /** Cover main title print size in mm (e.g. 13.5). */
+  cover_title_font_preset?: string | null
+  /** Chapter UUIDs hidden from preview/PDF by staff. */
+  editor_skipped_chapter_ids?: string[] | null
   /** Foreword / hat: null inherits answer_font_preset */
   algy_font_preset?: string | null
   hat_font_preset?: string | null

@@ -15,6 +15,8 @@ import { Button } from '@/components/ui/Button'
 import { SegmentedControl } from '@/components/ui/SegmentedControl'
 import { IconEye, IconX } from '@/components/ui/icons'
 import { EditorTypographyBar } from '@/components/editor/EditorTypographyBar'
+import { CoverTitleTypographyBar } from '@/components/editor/CoverTitleTypographyBar'
+import { ExportButton } from '@/components/editor/ExportButton'
 import { FixedChapterBookSettingsPanel } from '@/components/editor/FixedChapterBookSettingsPanel'
 import { CustomPageCard } from '@/components/editor/CustomPageCard'
 import {
@@ -287,7 +289,7 @@ export default function EditorViewPage() {
   const params = useParams()
   const orderId = params.orderId as string
   const router = useRouter()
-  const supabase = createClient()
+  const supabase = useMemo(() => createClient(), [])
   const mm = (v: number) => Math.round(v * 1.6)
 
   const [isMobile, setIsMobile] = useState(false)
@@ -334,6 +336,8 @@ export default function EditorViewPage() {
   const editorSaving = useEditorStore((s) => s.saving)
   const spreadIndex = useEditorStore((s) => s.spreadIndex)
   const setSpreadIndex = useEditorStore((s) => s.setSpreadIndex)
+  const editorSkippedChapterIds = useEditorStore((s) => s.editorSkippedChapterIds)
+  const setChapterSkippedFromBook = useEditorStore((s) => s.setChapterSkippedFromBook)
   const textAreaStyleFluid = useMemo(
     () => ({
       ...textAreaStyle,
@@ -345,6 +349,7 @@ export default function EditorViewPage() {
   )
   const {
     autoSave,
+    save,
     updateCustomPage,
     deleteCustomPage,
     uploadPhoto,
@@ -414,6 +419,15 @@ export default function EditorViewPage() {
   const mobilePreviewScale =
     mobilePreviewWidth != null ? Math.min(1, (mobilePreviewWidth - 32) / (mm(148) * 2 + 8)) : 1
 
+  const handleManualSave = useCallback(
+    (e?: React.MouseEvent) => {
+      e?.preventDefault()
+      e?.stopPropagation()
+      void save({ manual: true })
+    },
+    [save],
+  )
+
   if (loading) return (
     <div style={{ height: '100vh', background: '#F9F6F6', display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
       <p style={{ fontSize: 13, color: '#B8A8A8', fontWeight: 500 }}>Жүктелуде...</p>
@@ -457,11 +471,11 @@ export default function EditorViewPage() {
               Өңдеу аяқталғаннан кейін кітап «Аяқталды» статусына өтеді. Жалғастырасыз ба?
             </p>
             <div style={{ display: 'flex', gap: 10 }}>
-              <button onClick={() => setShowConfirm(false)}
+              <button type="button" onClick={() => setShowConfirm(false)}
                 style={{ flex: 1, padding: '10px 0', borderRadius: 8, border: '0.5px solid #E8E8E6', background: 'white', fontSize: 13, cursor: 'pointer', color: '#555' }}>
                 Болдырмау
               </button>
-              <button disabled={completing} onClick={async () => {
+              <button type="button" disabled={completing} onClick={async () => {
                 setCompleting(true)
                 try {
                   await completeEditing()
@@ -548,7 +562,12 @@ export default function EditorViewPage() {
           zIndex: 5,
         }}>
           <div style={{ display: 'flex', alignItems: 'center', gap: 14 }}>
-            <button onClick={() => { if (!freezeEditing) autoSave(); router.push('/editor-dashboard') }}
+            <button
+              type="button"
+              onClick={() => {
+                if (!freezeEditing) void save()
+                router.push('/editor-dashboard')
+              }}
               style={{ background: 'none', border: 'none', cursor: 'pointer', fontSize: 13, color: '#B8A8A8', padding: '4px 0', fontWeight: 600, transition: 'color 200ms cubic-bezier(0.4,0,0.2,1)' }}
               onMouseEnter={e => (e.currentTarget.style.color = W)}
               onMouseLeave={e => (e.currentTarget.style.color = '#B8A8A8')}>
@@ -572,10 +591,11 @@ export default function EditorViewPage() {
               </span>
             ) : (
               <>
+                <ExportButton beforeExport={save} />
                 <button
                   type="button"
                   disabled={editorSaving}
-                  onClick={() => { void autoSave() }}
+                  onClick={handleManualSave}
                   style={{
                     background: 'white',
                     color: W,
@@ -592,7 +612,7 @@ export default function EditorViewPage() {
                   onMouseLeave={e => { e.currentTarget.style.background = 'white'; e.currentTarget.style.borderColor = 'rgba(82,29,29,0.18)' }}>
                   Сақтау
                 </button>
-                <button onClick={() => setShowConfirm(true)}
+                <button type="button" onClick={() => setShowConfirm(true)}
                   style={{ background: W, color: 'white', border: 'none', borderRadius: 10, padding: '7px 20px', fontSize: 13, fontWeight: 700, cursor: 'pointer', transition: 'all 200ms cubic-bezier(0.4,0,0.2,1)', boxShadow: 'inset 0 1px 0 rgba(255,255,255,0.12), 0 4px 16px rgba(82,29,29,0.3)' }}
                   onMouseEnter={e => { e.currentTarget.style.transform = 'translateY(-1px)'; e.currentTarget.style.boxShadow = 'inset 0 1px 0 rgba(255,255,255,0.12), 0 8px 24px rgba(82,29,29,0.35)' }}
                   onMouseLeave={e => { e.currentTarget.style.transform = 'translateY(0)'; e.currentTarget.style.boxShadow = 'inset 0 1px 0 rgba(255,255,255,0.12), 0 4px 16px rgba(82,29,29,0.3)' }}>
@@ -606,10 +626,11 @@ export default function EditorViewPage() {
         <div style={{ flexShrink: 0, borderBottom: '1px solid rgba(82,29,29,0.08)', background: '#FAFAF9', padding: isMobile ? '8px 14px' : '10px 24px' }}>
           <div style={{ maxWidth: 920, margin: '0 auto', display: 'flex', flexDirection: 'column', gap: 12 }}>
             <EditorTypographyBar disabled={freezeEditing || staffPhotosLocked} collapsible defaultCollapsed />
+            <CoverTitleTypographyBar disabled={freezeEditing} collapsible defaultCollapsed />
             {hasFixedChapterPhrases ? (
               <FixedChapterBookSettingsPanel
                 uploadFixedChapterPhoto={uploadFixedChapterPhoto}
-                disabled={freezeEditing || staffPhotosLocked}
+                disabled={freezeEditing}
                 defaultCollapsed
               />
             ) : null}
@@ -633,6 +654,23 @@ export default function EditorViewPage() {
           </div>
         )}
 
+        {!freezeEditing && !editorDone && orderStatus === 'checking' && (
+          <div
+            style={{
+              background: '#ECFDF5',
+              padding: '12px 24px',
+              textAlign: 'center',
+              fontSize: 13,
+              fontWeight: 600,
+              color: '#065F46',
+              flexShrink: 0,
+              letterSpacing: '-0.01em',
+            }}
+          >
+            Клиент тапсырды. Бос сұрақтарға жауап жазуға және тұрақты тарау фразаларын түзетуге болады — өзгерістер автоматты сақталады.
+          </div>
+        )}
+
         {editorDone && (
           <div style={{ background: '#FDF7EE', padding: '12px 24px', textAlign: 'center', fontSize: 13, fontWeight: 600, color: '#92400E', flexShrink: 0, letterSpacing: '-0.01em' }}>
             Өңдеу аяқталды. Текст дайын. Енді кітап версткасы жасалады.
@@ -653,12 +691,67 @@ export default function EditorViewPage() {
                   const chAns = (ch.questions || []).filter((q: any) => !answerTextIsEffectivelyEmpty(answers[q.id] ?? '')).length
                   const chTotal = (ch.questions || []).length
                   const isActive = activeChapterId === ch.id && !activeSpecial
+                  const chapterEmpty = chAns === 0
+                  const skippedFromBook = editorSkippedChapterIds.includes(ch.id)
                   return (
-                    <button key={ch.id} onClick={() => switchChapter(ch.id)}
-                      style={{ width: '100%', textAlign: 'left', padding: '9px 10px', borderRadius: 9, border: 'none', cursor: 'pointer', marginBottom: 2, transition: 'all 150ms cubic-bezier(0.4,0,0.2,1)', background: isActive ? '#F5EDEC' : 'transparent', borderLeft: `2.5px solid ${isActive ? W : 'transparent'}` }}>
-                      <div style={{ fontSize: 12, fontWeight: isActive ? 700 : 500, color: isActive ? W : '#7A6060', marginBottom: 2, letterSpacing: '-0.01em' }}>{ch.title_kk}</div>
-                      {chTotal > 0 && <div style={{ fontSize: 10, color: '#C0B0B0', fontWeight: 500 }}>{chAns}/{chTotal}</div>}
-                    </button>
+                    <div key={ch.id} style={{ marginBottom: 2 }}>
+                      <button
+                        type="button"
+                        onClick={() => switchChapter(ch.id)}
+                        style={{
+                          width: '100%',
+                          textAlign: 'left',
+                          padding: '9px 10px',
+                          borderRadius: 9,
+                          border: 'none',
+                          cursor: 'pointer',
+                          transition: 'all 150ms cubic-bezier(0.4,0,0.2,1)',
+                          background: isActive ? '#F5EDEC' : 'transparent',
+                          borderLeft: `2.5px solid ${isActive ? W : 'transparent'}`,
+                          opacity: skippedFromBook ? 0.55 : 1,
+                        }}
+                      >
+                        <div
+                          style={{
+                            fontSize: 12,
+                            fontWeight: isActive ? 700 : 500,
+                            color: isActive ? W : '#7A6060',
+                            marginBottom: 2,
+                            letterSpacing: '-0.01em',
+                            textDecoration: skippedFromBook ? 'line-through' : 'none',
+                          }}
+                        >
+                          {ch.title_kk}
+                        </div>
+                        {chTotal > 0 && (
+                          <div style={{ fontSize: 10, color: '#C0B0B0', fontWeight: 500 }}>
+                            {chAns}/{chTotal}
+                            {skippedFromBook ? ' · жасырылған' : ''}
+                          </div>
+                        )}
+                      </button>
+                      {!freezeEditing && chapterEmpty ? (
+                        <label
+                          style={{
+                            display: 'flex',
+                            alignItems: 'center',
+                            gap: 6,
+                            padding: '0 10px 6px',
+                            fontSize: 10,
+                            color: '#9A8080',
+                            cursor: 'pointer',
+                          }}
+                        >
+                          <input
+                            type="checkbox"
+                            checked={skippedFromBook}
+                            onChange={(e) => setChapterSkippedFromBook(ch.id, e.target.checked)}
+                            style={{ width: 12, height: 12, accentColor: W }}
+                          />
+                          Кітаптан жасыру
+                        </label>
+                      ) : null}
+                    </div>
                   )
                 })}
                 {showFaktilerNav ? (
@@ -886,7 +979,13 @@ export default function EditorViewPage() {
                   {(currentChapter.questions || []).map((q: any) => {
                     const qCustomPages = getCustomPagesInQuestionSlot(q.id, flatQuestions, questionIndexById, customPages)
                     const answer = answers[q.id] || ''
-                    if (answerTextIsEffectivelyEmpty(answer) && qCustomPages.length === 0) return null
+                    if (
+                      freezeEditing &&
+                      answerTextIsEffectivelyEmpty(answer) &&
+                      qCustomPages.length === 0
+                    ) {
+                      return null
+                    }
                     return (
                       <div key={q.id} style={{ background: 'white', borderRadius: 14, padding: '20px 24px', boxShadow: '0 1px 4px rgba(82,29,29,0.06), 0 4px 16px rgba(82,29,29,0.04)' }}>
                         <button
@@ -918,26 +1017,34 @@ export default function EditorViewPage() {
                         >
                           {q.question_kk}
                         </button>
-                        {answer ? (
-                          freezeEditing ? (
-                            <div style={{ ...textAreaStyle, minHeight: 120, fontSize: 14, background: '#F9F6F6', color: '#7A6060', whiteSpace: 'pre-wrap', cursor: 'default' }}>
-                              {answer}
-                            </div>
-                          ) : (
-                            <EditorQuestionTextarea
-                              question={q}
-                              questionId={q.id}
-                              orderId={orderId}
-                              isMobile={isMobile}
-                              textAreaStyleFluid={textAreaStyleFluid}
-                              spreadIndexForQuestion={spreadIndexForPreviewTarget(previewPages, {
-                                kind: 'question',
-                                questionId: q.id,
-                              })}
-                              staffPhotosLocked={staffPhotosLocked}
-                            />
-                          )
-                        ) : null}
+                        {freezeEditing ? (
+                          <div
+                            style={{
+                              ...textAreaStyle,
+                              minHeight: 120,
+                              fontSize: 14,
+                              background: '#F9F6F6',
+                              color: '#7A6060',
+                              whiteSpace: 'pre-wrap',
+                              cursor: 'default',
+                            }}
+                          >
+                            {answerTextIsEffectivelyEmpty(answer) ? '—' : answerPlainTextPreview(answer)}
+                          </div>
+                        ) : (
+                          <EditorQuestionTextarea
+                            question={q}
+                            questionId={q.id}
+                            orderId={orderId}
+                            isMobile={isMobile}
+                            textAreaStyleFluid={textAreaStyleFluid}
+                            spreadIndexForQuestion={spreadIndexForPreviewTarget(previewPages, {
+                              kind: 'question',
+                              questionId: q.id,
+                            })}
+                            staffPhotosLocked={staffPhotosLocked}
+                          />
+                        )}
                         {qCustomPages.map((cp: CustomPage, idx: number) => (
                           <CustomPageCard
                             key={cp.id}

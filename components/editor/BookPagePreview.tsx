@@ -112,7 +112,7 @@ const PhotoQrPreview = memo(function PhotoQrPreview({
 })
 
 export type PreviewPage =
-  | { type: 'cover'; bookTitle: string; authorName: string }
+  | { type: 'cover'; bookTitle: string; authorName: string; titleFontMm?: number }
   | { type: 'chapter_break'; title: string; chapterNum: number; minFlatQuestionIndex: number }
   | {
       type: 'question'
@@ -193,7 +193,13 @@ export function BookPagePreview({ page, pageNum, bookTitle, isLeft }: BookPagePr
 
   if (!page) return <BlankPage />
   if (page.type === 'cover')
-    return <CoverPage bookTitle={page.bookTitle} authorName={page.authorName} />
+    return (
+      <CoverPage
+        bookTitle={page.bookTitle}
+        authorName={page.authorName}
+        titleFontMm={page.titleFontMm}
+      />
+    )
   if (page.type === 'chapter_break') return <ChapterBreakPage title={page.title} chapterNum={page.chapterNum} />
   if (page.type === 'algy_soz')
     return (
@@ -479,7 +485,16 @@ function BlankPage() {
   return <div style={{ width: mm(148), height: mm(210), background: '#F7F7F5', border: '0.5px solid #ddd', flexShrink: 0 }} />
 }
 
-function CoverPage({ bookTitle, authorName }: { bookTitle: string; authorName: string }) {
+function CoverPage({
+  bookTitle,
+  authorName,
+  titleFontMm,
+}: {
+  bookTitle: string
+  authorName: string
+  titleFontMm?: number
+}) {
+  const titleMm = titleFontMm && titleFontMm > 0 ? titleFontMm : COVER_TITLE_FONT_MM
   return (
     <div
       className="font-preview-book"
@@ -507,7 +522,7 @@ function CoverPage({ bookTitle, authorName }: { bookTitle: string; authorName: s
       >
         <div
           style={{
-            fontSize: mm(COVER_TITLE_FONT_MM),
+            fontSize: mm(titleMm),
             fontWeight: 700,
             color: '#111111',
             lineHeight: 1.14,

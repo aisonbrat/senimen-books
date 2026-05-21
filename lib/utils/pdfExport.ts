@@ -17,6 +17,10 @@ import {
   COVER_PRODUCT_TAGLINE_KK,
   COVER_TAGLINE_FONT_MM,
   COVER_TITLE_FONT_MM,
+  mmFontSizeToPdfPoints,
+  normalizeCoverTitleFontPreset,
+  resolveCoverTitleFontMm,
+  type CoverTitleFontPreset,
   CUSTOM_TEXT_TOP_MM,
   QUESTION_ANSWER_TOP_MM,
   QUESTION_TITLE_TOP_MM,
@@ -301,7 +305,7 @@ async function drawLogoTopCenter(pdf: jsPDF, topMm: number, maxHmm: number) {
 function measureWrappedTextBlockHmm(pdf: jsPDF, text: string, maxW: number, fontSizeMm: number, lineHeightMm?: number): number {
   const lineH = lineHeightMm ?? fontSizeMm * 1.45
   pdf.setFont('Cormorant', 'normal')
-  pdf.setFontSize(fontSizeMm * 2.8346)
+  pdf.setFontSize(mmFontSizeToPdfPoints(fontSizeMm))
   const paragraphs = text.split('\n\n')
   let total = 0
   paragraphs.forEach((para, pIdx) => {
@@ -333,7 +337,7 @@ function drawVectorText(
   const { bold = false, color = [26, 26, 26], align = 'left', lineHeightMm } = options
   const lineH = lineHeightMm ?? fontSizeMm * 1.45
   pdf.setFont('Cormorant', bold ? 'bold' : 'normal')
-  pdf.setFontSize(fontSizeMm * 2.8346)
+  pdf.setFontSize(mmFontSizeToPdfPoints(fontSizeMm))
   pdf.setTextColor(color[0], color[1], color[2])
 
   const paragraphs = text.split('\n\n')
@@ -462,7 +466,8 @@ function drawPageFooter(pdf: jsPDF, pageNum: number, bookTitle: string, isLeft: 
 
 async function drawCoverPage(
   pdf: jsPDF,
-  page: Extract<PreviewPage, { type: 'cover' }>
+  page: Extract<PreviewPage, { type: 'cover' }>,
+  titleMm: number,
 ) {
   pdf.setFillColor(255, 255, 255)
   pdf.rect(0, 0, W, H, 'F')
@@ -470,11 +475,19 @@ async function drawCoverPage(
   await drawLogoTopCenter(pdf, 20, 10)
 
   let y = COVER_CONTENT_BLOCK_TOP_MM
-  y += drawVectorText(pdf, page.bookTitle, MARGIN, y, W - MARGIN * 2, COVER_TITLE_FONT_MM, {
+  const titleSizeMm =
+    titleMm > 0
+      ? titleMm
+      : page.titleFontMm && page.titleFontMm > 0
+        ? page.titleFontMm
+        : COVER_TITLE_FONT_MM
+  pdf.setFont('Cormorant', 'bold')
+  pdf.setFontSize(mmFontSizeToPdfPoints(titleSizeMm))
+  y += drawVectorText(pdf, page.bookTitle, MARGIN, y, W - MARGIN * 2, titleSizeMm, {
     bold: true,
     color: [17, 17, 17],
     align: 'center',
-    lineHeightMm: COVER_TITLE_FONT_MM * 1.14,
+    lineHeightMm: titleSizeMm * 1.14,
   })
   y += 5
   y += drawVectorText(pdf, COVER_PRODUCT_TAGLINE_KK, MARGIN, y, W - MARGIN * 2, COVER_TAGLINE_FONT_MM, {
@@ -960,6 +973,7 @@ export type ExportOrderInput = {
   faktiler_facts?: unknown
   answer_font_preset?: string
   answer_text_align?: string
+  cover_title_font_preset?: string | null
   algy_font_preset?: string | null
   hat_font_preset?: string | null
   fixed_rectangle_color?: string | null
@@ -973,6 +987,9 @@ export async function exportBookToPDF(
   onProgress?: (current: number, total: number) => void,
   typographyOverride?: BookTypography | null,
   chapterFixedPhotos?: Record<string, string>,
+  chapterFixedPhraseOverrides?: Record<string, string>,
+  editorSkippedChapterIds?: string[],
+  coverTitleFontPreset?: import('@/lib/bookLayout').CoverTitleFontPreset,
   photoMode: PdfClientPhotoMode = 'png',
 ): Promise<void> {
   logoRasterCache = null
@@ -982,8 +999,20 @@ export async function exportBookToPDF(
 
   const typo = typographyOverride ?? normalizeBookTypographyFromOrder(order)
 
+  const coverTitleFontMm = resolveCoverTitleFontMm(order, coverTitleFontPreset)
+
+  const coverPresetResolved = normalizeCoverTitleFontPreset(
+    coverTitleFontPreset ??
+      (order as { cover_title_font_preset?: string | null }).cover_title_font_preset,
+  )
+
+  const orderForPages = {
+    ...(order as object),
+    cover_title_font_preset: coverPresetResolved,
+  } as ExportOrderInput
+
   const previewPages = buildPreviewPages({
-    order,
+    order: orderForPages,
     chapters,
     answers,
     customPages,
@@ -991,6 +1020,9 @@ export async function exportBookToPDF(
     hat_text: order.hat_text ?? '',
     typography: typo,
     chapterFixedPhotos,
+    chapterFixedPhraseOverrides,
+    editorSkippedChapterIds,
+    coverTitleFontPreset: coverPresetResolved,
   })
 
   if (previewPages.length === 0) {
@@ -1024,7 +1056,7 @@ export async function exportBookToPDF(
 
     switch (page.type) {
       case 'cover':
-        await drawCoverPage(pdf, page)
+        await drawCoverPage(pdf, page, coverTitleFontMm)
         break
       case 'contents':
         drawContentsPage(pdf, page, pageNum, isLeft)

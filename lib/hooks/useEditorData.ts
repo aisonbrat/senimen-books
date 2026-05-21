@@ -23,13 +23,54 @@ import {
   isLikelyNetworkOrFetchFailure,
   showEditorSaveNetworkErrorToast,
   showEditorActionErrorToast,
+  showEditorSaveSuccessToast,
 } from '@/lib/utils/editorSaveErrorToast'
 import { TRIAL_FREE_QUESTION_COUNT } from '@/lib/constants/trialBook'
 import {
   ANSWERS_TEXT_ONLY_SELECT,
   CUSTOM_PAGES_EDITOR_SELECT,
   ORDERS_EDITOR_SELECT,
+  ORDERS_EDITOR_SELECT_LEGACY,
 } from '@/lib/supabase/querySelects'
+import { phraseOverrideForDb } from '@/lib/utils/fixedChapterPhrase'
+import {
+  fetchOrderChapterFixedPhotos,
+  formatSupabaseError,
+  isMissingPostgrestColumn,
+  upsertOrderChapterFixedPhotos,
+  upsertOrderChapterFixedPhotoPath,
+} from '@/lib/supabase/orderChapterFixedPhotos'
+import {
+  bookSettingsPersistErrorMessage,
+  fetchOrderBookSettings,
+  isMissingBookSettingsColumn,
+  parseBookSettingsFromOrderRow,
+  persistOrderBookSettings,
+} from '@/lib/supabase/orderBookSettings'
+import {
+  recoverFixedChapterPhotosFromStorage,
+  repairFixedChapterPhotoRows,
+} from '@/lib/storage/recoverFixedChapterPhotos'
+
+/** Snapshot of all fields that `save()` persists — used to skip autosave right after hydrate. */
+function editorAutosaveSnapshot(): string {
+  const s = useEditorStore.getState()
+  return JSON.stringify({
+    answers: s.answers,
+    algy_soz: s.algy_soz,
+    hat_text: s.hat_text,
+    faktiler_facts: s.faktiler_facts,
+    answerFontPreset: s.answerFontPreset,
+    answerTextAlign: s.answerTextAlign,
+    coverTitleFontPreset: s.coverTitleFontPreset,
+    algyFontPresetOverride: s.algyFontPresetOverride,
+    hatFontPresetOverride: s.hatFontPresetOverride,
+    chapterFixedPhotos: s.chapterFixedPhotos,
+    chapterFixedPhraseOverrides: s.chapterFixedPhraseOverrides,
+    editorSkippedChapterIds: [...s.editorSkippedChapterIds].sort(),
+    fixed_rectangle_color: s.order?.fixed_rectangle_color ?? '',
+  })
+}
 
 export function useEditorData(orderId: string) {
   const supabase = useMemo(() => createClient(), [])
@@ -37,8 +78,11 @@ export function useEditorData(orderId: string) {
   /** Serialize saves so overlapping autosave + manual save never run in parallel. */
   const saveMutexTail = useRef<Promise<void>>(Promise.resolve())
   const fetchGenerationRef = useRef(0)
+  const fetchOrderIdRef = useRef<string | null>(null)
   const abortControllerRef = useRef<AbortController | null>(null)
   const autosaveAllowedRef = useRef(false)
+  /** After hydrate, autosave runs only when state differs (prevents overwriting DB with defaults). */
+  const autosaveBaselineRef = useRef<string | null>(null)
 
   const { setOrder, setCustomPages, setSavedAnswers, setSaving, setLastSaved, getUnsavedPairs } =
     useEditorStore()
@@ -53,21 +97,58 @@ export function useEditorData(orderId: string) {
     autosaveAllowedRef.current = false
 
     const store = useEditorStore.getState()
-    store.clearEditorSessionForNewOrder()
-    store.setLoading(true)
+    const switchingOrder = fetchOrderIdRef.current !== orderId
+    fetchOrderIdRef.current = orderId
+    if (switchingOrder) {
+      store.clearEditorSessionForNewOrder()
+      autosaveBaselineRef.current = null
+      store.setLoading(true)
+    }
 
     try {
-      const { data: orderData, error: orderErr } = await supabase
+      let orderData: unknown = null
+      let orderErr: unknown = null
+      const primaryOrderRes = await supabase
         .from('orders')
         .select(ORDERS_EDITOR_SELECT)
         .eq('id', orderId)
         .abortSignal(signal)
         .single()
+      orderData = primaryOrderRes.data
+      orderErr = primaryOrderRes.error
+      if (orderErr && isMissingBookSettingsColumn(orderErr)) {
+        const legacyRes = await supabase
+          .from('orders')
+          .select(ORDERS_EDITOR_SELECT_LEGACY)
+          .eq('id', orderId)
+          .abortSignal(signal)
+          .single()
+        orderData = legacyRes.data
+        orderErr = legacyRes.error
+      }
 
       if (signal.aborted || gen !== fetchGenerationRef.current) return
       if (orderErr || !orderData) throw orderErr ?? new Error('Order not found')
 
       const orderRecord = orderData as unknown as Record<string, unknown>
+
+      let bookSettings = parseBookSettingsFromOrderRow(orderRecord)
+      const rowHasBookSettingsCols =
+        Object.prototype.hasOwnProperty.call(orderRecord, 'cover_title_font_preset') ||
+        Object.prototype.hasOwnProperty.call(orderRecord, 'editor_skipped_chapter_ids')
+      if (!rowHasBookSettingsCols) {
+        bookSettings = await fetchOrderBookSettings(supabase, orderId, signal)
+      } else {
+        try {
+          const fetched = await fetchOrderBookSettings(supabase, orderId, signal)
+          bookSettings = fetched
+        } catch (bookErr) {
+          if (process.env.NODE_ENV !== 'production') {
+            console.warn('[useEditorData] book settings fetch fallback to order row:', bookErr)
+          }
+        }
+      }
+      const { editorSkippedChapterIds, coverTitleFontPreset } = bookSettings
 
       const { data: chaptersData } = await supabase
         .from('chapters')
@@ -99,13 +180,11 @@ export function useEditorData(orderId: string) {
               .abortSignal(signal)
           : Promise.resolve({ data: [] as { id: string; phrase_kk: string }[], error: null })
 
-      const [phRes, cfpRes, answersRes, cpRes] = await Promise.all([
+      const cfpPromise = fetchOrderChapterFixedPhotos(supabase, orderId, signal)
+
+      const [phRes, cfpPack, answersRes, cpRes] = await Promise.all([
         phrasePromise,
-        supabase
-          .from('order_chapter_fixed_photos')
-          .select('chapter_id, photo_path')
-          .eq('order_id', orderId)
-          .abortSignal(signal),
+        cfpPromise,
         supabase
           .from('answers')
           .select(ANSWERS_TEXT_ONLY_SELECT)
@@ -121,8 +200,10 @@ export function useEditorData(orderId: string) {
 
       if (signal.aborted || gen !== fetchGenerationRef.current) return
 
-      const batchErr = phRes.error || cfpRes.error || answersRes.error || cpRes.error
+      const batchErr = phRes.error || answersRes.error || cpRes.error
       if (batchErr) throw batchErr
+
+      const cfpRes = { data: cfpPack.data }
 
       const phraseById = Object.fromEntries(
         (phRes.data || []).map((r: { id: string; phrase_kk: string }) => [r.id, r.phrase_kk]),
@@ -134,9 +215,44 @@ export function useEditorData(orderId: string) {
       }))
 
       const chapterFixedPhotos: Record<string, string> = {}
+      const chapterFixedPhraseOverrides: Record<string, string> = {}
       for (const row of cfpRes.data || []) {
-        const r = row as { chapter_id: string; photo_path: string | null }
+        const r = row as {
+          chapter_id: string
+          photo_path: string | null
+          phrase_override_kk: string | null
+        }
         if (r.photo_path?.trim()) chapterFixedPhotos[r.chapter_id] = r.photo_path.trim()
+        if (r.phrase_override_kk != null && String(r.phrase_override_kk).trim() !== '') {
+          chapterFixedPhraseOverrides[r.chapter_id] = String(r.phrase_override_kk).trim()
+        }
+      }
+
+      const fixedChapterIds = chaptersHydrated
+        .filter((c) => c.part_kind !== 'faktiler' && c.fixed_phrase_id)
+        .map((c) => c.id)
+      const photosBeforeRecovery = { ...chapterFixedPhotos }
+      if (fixedChapterIds.length > 0) {
+        const recovered = await recoverFixedChapterPhotosFromStorage(
+          supabase,
+          orderId,
+          fixedChapterIds,
+          chapterFixedPhotos,
+        )
+        Object.assign(chapterFixedPhotos, recovered)
+        if (signal.aborted || gen !== fetchGenerationRef.current) return
+        const repaired = Object.keys(recovered).some(
+          (id) => recovered[id] && recovered[id] !== photosBeforeRecovery[id],
+        )
+        if (repaired) {
+          void repairFixedChapterPhotoRows(supabase, orderId, recovered, photosBeforeRecovery).catch(
+            (err) => {
+              if (process.env.NODE_ENV !== 'production') {
+                console.warn('[useEditorData] repair fixed chapter photos:', err)
+              }
+            },
+          )
+        }
       }
 
       const answersMap: Record<string, string> = {}
@@ -175,10 +291,15 @@ export function useEditorData(orderId: string) {
         activeChapterId: chaptersHydrated.find((c) => c.part_kind !== 'faktiler')?.id ?? chaptersHydrated[0]?.id ?? null,
         answerFontPreset: typo.fontPreset,
         answerTextAlign: typo.textAlign,
+        coverTitleFontPreset,
         algyFontPresetOverride: normalizeSectionFontPreset(orderRecord.algy_font_preset),
         hatFontPresetOverride: normalizeSectionFontPreset(orderRecord.hat_font_preset),
         chapterFixedPhotos,
+        chapterFixedPhraseOverrides,
+        editorSkippedChapterIds,
       })
+
+      autosaveBaselineRef.current = editorAutosaveSnapshot()
 
       queueMicrotask(() => {
         setTimeout(() => {
@@ -187,8 +308,14 @@ export function useEditorData(orderId: string) {
       })
     } catch (err) {
       if (signal.aborted || gen !== fetchGenerationRef.current) return
+      const detail = formatSupabaseError(err)
       if (process.env.NODE_ENV !== 'production') {
-        console.error('[useEditorData] fetch failed:', err)
+        console.error('[useEditorData] fetch failed:', detail, err)
+      }
+      if (isLikelyNetworkOrFetchFailure(err)) {
+        showEditorSaveNetworkErrorToast(detail)
+      } else {
+        showEditorActionErrorToast('Кітап жүктелмеді', detail)
       }
     } finally {
       if (gen === fetchGenerationRef.current) {
@@ -210,7 +337,7 @@ export function useEditorData(orderId: string) {
   }, [])
 
   /** Persists editor state. Does not throw (avoids unhandled rejections from debounced autosave). Serialized — overlapping calls wait in order and each run sees the latest store snapshot. */
-  const save = useCallback(async (): Promise<boolean> => {
+  const save = useCallback(async (opts?: { manual?: boolean }): Promise<boolean> => {
     let release!: () => void
     const ticket = new Promise<void>((resolve) => {
       release = resolve
@@ -231,9 +358,13 @@ export function useEditorData(orderId: string) {
             faktiler_facts,
             answerFontPreset,
             answerTextAlign,
+            coverTitleFontPreset,
             algyFontPresetOverride,
             hatFontPresetOverride,
             chapterFixedPhotos,
+            chapterFixedPhraseOverrides,
+            editorSkippedChapterIds,
+            chapters: chaptersState,
             order: currentOrder,
           } = useEditorStore.getState()
           const unsaved = getUnsavedPairs()
@@ -262,46 +393,74 @@ export function useEditorData(orderId: string) {
               }
             }
           }
-          const { error: orderErr } = await supabase
-            .from('orders')
-            .update({
-              algy_soz: algy_soz || null,
-              hat_text: hat_text || null,
-              faktiler_facts: faktilerFactsForDb(faktiler_facts),
-              answer_font_preset: answerFontPreset,
-              answer_text_align: answerTextAlign,
-              algy_font_preset: algyFontPresetOverride,
-              hat_font_preset: hatFontPresetOverride,
-              fixed_rectangle_color:
-                (currentOrder as Order | null)?.fixed_rectangle_color != null &&
-                String((currentOrder as Order).fixed_rectangle_color).trim() !== ''
-                  ? normalizeFixedRectangleColor((currentOrder as Order).fixed_rectangle_color)
-                  : null,
-            })
-            .eq('id', orderId)
-          if (orderErr) {
-            logSaveFailure(orderErr, 'orders update')
-            return { ok: false, err: orderErr }
+          const orderPatch: Record<string, unknown> = {
+            algy_soz: algy_soz || null,
+            hat_text: hat_text || null,
+            faktiler_facts: faktilerFactsForDb(faktiler_facts),
+            answer_font_preset: answerFontPreset,
+            answer_text_align: answerTextAlign,
+            algy_font_preset: algyFontPresetOverride,
+            hat_font_preset: hatFontPresetOverride,
+            fixed_rectangle_color:
+              (currentOrder as Order | null)?.fixed_rectangle_color != null &&
+              String((currentOrder as Order).fixed_rectangle_color).trim() !== ''
+                ? normalizeFixedRectangleColor((currentOrder as Order).fixed_rectangle_color)
+                : null,
+          }
+          const orderRes = await supabase.from('orders').update(orderPatch).eq('id', orderId)
+          if (orderRes.error) {
+            logSaveFailure(orderRes.error, 'orders update')
+            return { ok: false, err: orderRes.error }
           }
 
-          const { error: cfpDelErr } = await supabase.from('order_chapter_fixed_photos').delete().eq('order_id', orderId)
-          if (cfpDelErr) {
-            logSaveFailure(cfpDelErr, 'order_chapter_fixed_photos delete')
-            return { ok: false, err: cfpDelErr }
+          const bookPersist = await persistOrderBookSettings(supabase, orderId, {
+            editorSkippedChapterIds,
+            coverTitleFontPreset,
+          })
+          if (!bookPersist.ok) {
+            const { title, detail } = bookSettingsPersistErrorMessage(bookPersist)
+            showEditorActionErrorToast(title, detail)
+            return { ok: false, err: new Error(bookPersist.kind) }
           }
-          const cfpIns = Object.entries(chapterFixedPhotos).filter(([, path]) => path?.trim())
-          if (cfpIns.length > 0) {
-            const { error: cfpInsErr } = await supabase.from('order_chapter_fixed_photos').insert(
-              cfpIns.map(([chapter_id, photo_path]) => ({
+          const { coverTitleFontPreset: savedCover, editorSkippedChapterIds: savedSkipped } =
+            bookPersist.saved
+
+          const { data: existingCfp } = await supabase
+            .from('order_chapter_fixed_photos')
+            .select('chapter_id, photo_path')
+            .eq('order_id', orderId)
+          const dbPhotoByChapter: Record<string, string> = {}
+          for (const row of existingCfp || []) {
+            const r = row as { chapter_id: string; photo_path: string | null }
+            if (r.photo_path?.trim()) dbPhotoByChapter[r.chapter_id] = r.photo_path.trim()
+          }
+
+          const fixedChapters = chaptersState.filter(
+            (c) => c.part_kind !== 'faktiler' && c.fixed_phrase_id,
+          )
+          const cfpRows = fixedChapters
+            .map((ch) => {
+              const photo =
+                chapterFixedPhotos[ch.id]?.trim() || dbPhotoByChapter[ch.id] || null
+              const overrideRaw = chapterFixedPhraseOverrides[ch.id]
+              const phrase_override_kk =
+                overrideRaw !== undefined
+                  ? phraseOverrideForDb(overrideRaw, ch.fixed_phrase_kk)
+                  : null
+              return {
                 order_id: orderId,
-                chapter_id,
-                photo_path: String(photo_path).trim(),
-              }))
-            )
-            if (cfpInsErr) {
-              logSaveFailure(cfpInsErr, 'order_chapter_fixed_photos insert')
-              return { ok: false, err: cfpInsErr }
-            }
+                chapter_id: ch.id,
+                photo_path: photo,
+                phrase_override_kk,
+              }
+            })
+            .filter((row) => row.photo_path || row.phrase_override_kk != null)
+
+          try {
+            await upsertOrderChapterFixedPhotos(supabase, cfpRows)
+          } catch (cfpErr) {
+            logSaveFailure(cfpErr, 'order_chapter_fixed_photos upsert')
+            return { ok: false, err: cfpErr }
           }
 
           if (currentOrder) {
@@ -310,12 +469,15 @@ export function useEditorData(orderId: string) {
               faktiler_facts: faktilerFactsForDb(faktiler_facts),
               answer_font_preset: answerFontPreset,
               answer_text_align: answerTextAlign,
+              cover_title_font_preset: savedCover,
+              editor_skipped_chapter_ids: savedSkipped,
               algy_font_preset: algyFontPresetOverride,
               hat_font_preset: hatFontPresetOverride,
             } as Order)
           }
           setSavedAnswers({ ...useEditorStore.getState().answers })
           setLastSaved(new Date())
+          autosaveBaselineRef.current = editorAutosaveSnapshot()
           return { ok: true }
         } catch (err: unknown) {
           logSaveFailure(err, 'save unexpected')
@@ -335,6 +497,18 @@ export function useEditorData(orderId: string) {
             ? outcome.err.message
             : String(outcome.err)
       showEditorSaveNetworkErrorToast(detail.trim() || undefined)
+    }
+
+    if (outcome.ok && opts?.manual) {
+      showEditorSaveSuccessToast()
+    } else if (!outcome.ok && opts?.manual && outcome.err != null && !isLikelyNetworkOrFetchFailure(outcome.err)) {
+      const detail =
+        outcome.err && typeof outcome.err === 'object' && outcome.err !== null && 'message' in outcome.err
+          ? String((outcome.err as { message: unknown }).message)
+          : outcome.err instanceof Error
+            ? outcome.err.message
+            : String(outcome.err)
+      showEditorActionErrorToast('Сақтау сәтсіз', detail.trim() || undefined)
     }
 
     return outcome.ok
@@ -555,6 +729,11 @@ export function useEditorData(orderId: string) {
           return
         }
         useEditorStore.getState().setChapterFixedPhotoPath(chapterId, filePath)
+        try {
+          await upsertOrderChapterFixedPhotoPath(supabase, orderId, chapterId, filePath)
+        } catch (dbErr) {
+          logSaveFailure(dbErr, 'order_chapter_fixed_photos upsert after upload')
+        }
       } catch (err: unknown) {
         logUploadErr('uploadFixedChapterPhoto', err)
         void showStorageUploadAlert(supabase, orderId, 'Фото жүктелмеді (тұрақты тарау)', null, err)
@@ -580,13 +759,24 @@ export function useEditorData(orderId: string) {
 
   const answerFontPreset = useEditorStore((s) => s.answerFontPreset)
   const answerTextAlign = useEditorStore((s) => s.answerTextAlign)
+  const coverTitleFontPreset = useEditorStore((s) => s.coverTitleFontPreset)
   const algyFontPresetOverride = useEditorStore((s) => s.algyFontPresetOverride)
   const hatFontPresetOverride = useEditorStore((s) => s.hatFontPresetOverride)
   const chapterFixedPhotosJson = useEditorStore((s) => JSON.stringify(s.chapterFixedPhotos))
+  const chapterFixedPhraseOverridesJson = useEditorStore((s) =>
+    JSON.stringify(s.chapterFixedPhraseOverrides),
+  )
+  const editorSkippedChapterIdsJson = useEditorStore((s) =>
+    JSON.stringify(s.editorSkippedChapterIds),
+  )
   const fixedRectangleColor = useEditorStore((s) => s.order?.fixed_rectangle_color ?? '')
 
   useEffect(() => {
     if (!autosaveAllowedRef.current) return
+    const snap = editorAutosaveSnapshot()
+    if (autosaveBaselineRef.current !== null && snap === autosaveBaselineRef.current) {
+      return
+    }
     debouncedSave()
     return () => clearTimeout(saveTimer.current)
   }, [
@@ -596,9 +786,12 @@ export function useEditorData(orderId: string) {
     faktilerFactsJson,
     answerFontPreset,
     answerTextAlign,
+    coverTitleFontPreset,
     algyFontPresetOverride,
     hatFontPresetOverride,
     chapterFixedPhotosJson,
+    chapterFixedPhraseOverridesJson,
+    editorSkippedChapterIdsJson,
     fixedRectangleColor,
     debouncedSave,
   ])
@@ -688,6 +881,7 @@ export function useEditorData(orderId: string) {
 
   return {
     autoSave: save,
+    save,
     addCustomPage,
     updateCustomPage,
     moveCustomPage,

@@ -19,6 +19,10 @@ import {
   type OrderProgress,
 } from '@/lib/admin/orderBookProgress'
 import { fetchOrderBookProgressMap } from '@/lib/admin/fetchOrderBookProgress'
+import { fetchOrderChapterFixedPhotos } from '@/lib/supabase/orderChapterFixedPhotos'
+import { parseEditorSkippedChapterIds } from '@/lib/utils/editorSkippedChapters'
+import { normalizeCoverTitleFontPreset } from '@/lib/bookLayout'
+import { recoverFixedChapterPhotosFromStorage } from '@/lib/storage/recoverFixedChapterPhotos'
 import {
   adminDeleteOrder,
   adminFetchOrderProgressMap,
@@ -65,14 +69,46 @@ async function fetchOrderData(orderId: string, categoryId: string) {
     fixed_phrase_kk: ch.fixed_phrase_id ? phraseById[String(ch.fixed_phrase_id)] ?? null : null,
   }))
 
-  const { data: cfpRows } = await supabase
-    .from('order_chapter_fixed_photos')
-    .select('chapter_id, photo_path')
-    .eq('order_id', orderId)
+  const { data: skipRow } = await supabase
+    .from('orders')
+    .select('editor_skipped_chapter_ids, cover_title_font_preset')
+    .eq('id', orderId)
+    .maybeSingle()
+  const editorSkippedChapterIds = parseEditorSkippedChapterIds(
+    (skipRow as { editor_skipped_chapter_ids?: unknown } | null)?.editor_skipped_chapter_ids,
+  )
+  const coverTitleFontPreset = normalizeCoverTitleFontPreset(
+    (skipRow as { cover_title_font_preset?: unknown } | null)?.cover_title_font_preset,
+  )
+
+  const { data: cfpRows } = await fetchOrderChapterFixedPhotos(supabase, orderId)
   const chapterFixedPhotos: Record<string, string> = {}
+  const chapterFixedPhraseOverrides: Record<string, string> = {}
   for (const row of cfpRows || []) {
-    const r = row as { chapter_id: string; photo_path: string | null }
+    const r = row as {
+      chapter_id: string
+      photo_path: string | null
+      phrase_override_kk: string | null
+    }
     if (r.photo_path?.trim()) chapterFixedPhotos[r.chapter_id] = r.photo_path.trim()
+    if (r.phrase_override_kk != null) {
+      chapterFixedPhraseOverrides[r.chapter_id] = String(r.phrase_override_kk).trim()
+    }
+  }
+
+  const fixedChapterIds = chapters
+    .filter((c: { fixed_phrase_id?: string | null; part_kind?: string }) =>
+      c.part_kind !== 'faktiler' && c.fixed_phrase_id,
+    )
+    .map((c: { id: string }) => c.id)
+  if (fixedChapterIds.length > 0) {
+    const recovered = await recoverFixedChapterPhotosFromStorage(
+      supabase,
+      orderId,
+      fixedChapterIds,
+      chapterFixedPhotos,
+    )
+    Object.assign(chapterFixedPhotos, recovered)
   }
 
   let pdf_colophon_template_kk: string | null = null
@@ -115,7 +151,17 @@ async function fetchOrderData(orderId: string, categoryId: string) {
       .sort((a: any, b: any) => a.sort_order - b.sort_order)
       .forEach((cp: any) => allPages.push({ type: 'custom', data: cp }))
   })
-  return { allPages, answers, chapters, customPages, chapterFixedPhotos, pdf_colophon_template_kk }
+  return {
+    allPages,
+    answers,
+    chapters,
+    customPages,
+    chapterFixedPhotos,
+    chapterFixedPhraseOverrides,
+    editorSkippedChapterIds,
+    coverTitleFontPreset,
+    pdf_colophon_template_kk,
+  }
 }
 
 /* eslint-enable @typescript-eslint/no-explicit-any */
@@ -181,6 +227,7 @@ type AdminOrderListRow = {
   answer_text_align?: string | null
   algy_font_preset?: string | null
   hat_font_preset?: string | null
+  cover_title_font_preset?: string | null
   fixed_rectangle_color?: string | null
   algy_soz?: string | null
   hat_text?: string | null
@@ -218,7 +265,16 @@ function PDFButton({ order }: { order: AdminOrderListRow }) {
     setExporting(true)
     setProgress({ current: 0, total: 0 })
     try {
-      const { answers, chapters, customPages, chapterFixedPhotos, pdf_colophon_template_kk } = await fetchOrderData(
+      const {
+        answers,
+        chapters,
+        customPages,
+        chapterFixedPhotos,
+        chapterFixedPhraseOverrides,
+        editorSkippedChapterIds,
+        coverTitleFontPreset,
+        pdf_colophon_template_kk,
+      } = await fetchOrderData(
         order.id,
         String(order.category_id ?? ''),
       )
@@ -238,6 +294,7 @@ function PDFButton({ order }: { order: AdminOrderListRow }) {
         faktiler_facts: order.faktiler_facts,
         answer_font_preset: order.answer_font_preset ?? undefined,
         answer_text_align: order.answer_text_align ?? undefined,
+        cover_title_font_preset: order.cover_title_font_preset ?? undefined,
         algy_font_preset: order.algy_font_preset,
         hat_font_preset: order.hat_font_preset,
         fixed_rectangle_color: order.fixed_rectangle_color,
@@ -249,6 +306,9 @@ function PDFButton({ order }: { order: AdminOrderListRow }) {
         answers,
         customPages,
         chapterFixedPhotos,
+        chapterFixedPhraseOverrides,
+        editorSkippedChapterIds,
+        coverTitleFontPreset,
         typography: normalizeBookTypographyFromOrder(pdfOrder),
         photoMode,
         onProgress: (c, t) => setProgress({ current: c, total: t }),
