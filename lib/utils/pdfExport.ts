@@ -1052,7 +1052,9 @@ export async function exportBookToPDF(
 
     const page = previewPages[i]
     const pageNum = i + 1
-    const isLeft = i % 2 === 0
+    // Cover (i=0) is standalone. Pages i≥1: even page numbers land on the left
+    // spine (i=1→page 2, i=3→page 4 …), odd on the right (i=2→page 3 …).
+    const isLeft = i % 2 === 1
 
     switch (page.type) {
       case 'cover':
